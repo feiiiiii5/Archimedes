@@ -1094,7 +1094,18 @@ const previewBridge = {
     if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
     return { opened: true };
   },
-  getWorkbenchNote: async (key: string) => ({ content: window.localStorage.getItem(`archimedes-workbench-note:${key}`) || "", updatedAt: null }),
+  getWorkbenchNote: async (key: string) => {
+    const storageKey = `archimedes-workbench-note:${key}`;
+    let content = window.localStorage.getItem(storageKey) || "";
+    const owner = key.match(/^owner:(thread|new):(\[.*\])$/);
+    if (!content && owner) {
+      const parts = JSON.parse(owner[2]) as Array<string | null>;
+      const legacyKey = `archimedes-workbench-note:${owner[1] === "thread" ? parts[1] : `draft:${parts[0]}`}`;
+      content = window.localStorage.getItem(legacyKey) || "";
+      if (content) { window.localStorage.setItem(storageKey, content); window.localStorage.removeItem(legacyKey); }
+    }
+    return { content, updatedAt: null };
+  },
   saveWorkbenchNote: async (key: string, content: string) => {
     if (content.trim()) window.localStorage.setItem(`archimedes-workbench-note:${key}`, content);
     else window.localStorage.removeItem(`archimedes-workbench-note:${key}`);
