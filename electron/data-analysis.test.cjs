@@ -180,10 +180,10 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
   Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map((name) => [name, icons[name]])), useUISettings: () => ({ t: (key) => key }) });
   await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
   scope.format = scope.formatAnalysisNumber; await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
-  const records = new Map(), owner = { projectId: "project-a", workspaceId: "workspace-a", executionRoot: directory };
+  const records = new Map(), owner = { dataRoot: directory, projectId: "project-a", workspaceId: "workspace-a", executionRoot: directory };
   const bridge = {
     saveProjectResult: async (input) => { const detail = packages.savePackage({ ...input, executionRoot: directory, id: input.id || crypto.randomUUID() }); records.set(detail.id, detail); return detail; },
-    linkProjectResultThread: async (id, threadId) => { const record = { ...records.get(id), threadId }; records.set(id, record); return packages.readPackage(record); },
+    linkProjectResultThread: async (id, threadId, dataRoot) => { assert.equal(dataRoot, owner.dataRoot); const record = { ...records.get(id), threadId }; records.set(id, record); return packages.readPackage(record); },
     listProjectResults: async () => [...records.values()], getProjectResult: async (id) => packages.readPackage(records.get(id)), readProjectResultFile: async (id, name) => packages.readPackageFile(records.get(id), name),
   };
   let root = createRoot(document.getElementById("root")), handoff, handoffGate;
