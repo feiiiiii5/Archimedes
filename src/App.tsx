@@ -1,3 +1,4 @@
+import { appendComposerText, getComposerSession, updateComposerSession, type ComposerRequest, type ComposerSessions } from "./composer-session";
 import { newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -256,7 +257,20 @@ type ComposerSlashCommand = {
 
 function readComposerDraft(key: string): ComposerDraft | null {
   try {
-    const raw = window.localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`);
+    let raw = window.localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`);
+    // A legacy key has no dataRoot. Claim it once when first reopened, rather
+    // than copying the same unowned text into every imported cloud session.
+    if (!raw && (key.startsWith("new:[") || key.startsWith("thread:["))) {
+      const parts = JSON.parse(key.slice(key.indexOf(":") + 1)) as Array<string | null>;
+      const legacyKey = key.startsWith("thread:") ? parts[1] : `new:${parts[1] ?? "none"}:${parts[3]}`;
+      if (legacyKey) {
+        raw = window.localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}${legacyKey}`);
+        if (raw) {
+          window.localStorage.setItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`, raw);
+          window.localStorage.removeItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}${legacyKey}`);
+        }
+      }
+    }
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<ComposerDraft>;
     if (typeof value.text !== "string") return null;
@@ -1395,7 +1409,7 @@ function App() {
   const [selectionError, setSelectionError] = useState("");
   const activeRunRef = useRef<{ id: string; ownerKey: string; selection: TaskSelection; threadId: string | null; pendingAction?: PendingAction | null; finished?: boolean } | null>(null);
   const [runningOwnerKey, setRunningOwnerKey] = useState<string | null>(null);
-  const taskOwnerKey = taskDraftKey(taskSelection);
+  const composerDraftKey = taskDraftKey(taskSelection);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceDialog, setWorkspaceDialog] = useState<
     | { mode: "create"; projectId: string; kind: ProjectWorkspaceKind }
@@ -1464,15 +1478,36 @@ function App() {
     : null;
   const [nativeStream, setNativeStream] = useState<{ threadId: string; events: ResearchEvent[] }>({ threadId: "", events: [] });
   const [nativeQuestions, setNativeQuestions] = useState<Array<{ threadId: string; question: NativeAgentQuestion }>>([]);
-  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId || (agentBusy && runningOwnerKey === taskOwnerKey && nativeStream.threadId === runningThreadId)
-    ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId, agentBusy, runningOwnerKey, taskOwnerKey, runningThreadId]);
+  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId || (agentBusy && runningOwnerKey === composerDraftKey && nativeStream.threadId === runningThreadId)
+    ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId, agentBusy, runningOwnerKey, composerDraftKey, runningThreadId]);
   useEffect(() => {
     if (settingsOpen) return;
     let active = true;
     void desktopBridge.getAgentBackendConfig().then((config) => { if (active) setNativeBackend(config); }).catch(() => { if (active) setNativeBackend(null); });
     return () => { active = false; };
   }, [settingsOpen]);
-  const [contextItems, setContextItems] = useState<ContextAttachment[]>([]);
+  const [queuedPromptScopes, setQueuedPromptScopes] = useState<Record<string, QueuedPrompt[]>>({});
+  const queuedPromptScopesRef = useRef(queuedPromptScopes);
+  function updateQueuedPrompts(key: string, update: QueuedPrompt[] | ((current: QueuedPrompt[]) => QueuedPrompt[])) {
+    const current = queuedPromptScopesRef.current[key] ?? [];
+    queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [key]: typeof update === "function" ? update(current) : update };
+    setQueuedPromptScopes(queuedPromptScopesRef.current);
+  }
+  const [composerSessions, setComposerSessions] = useState<ComposerSessions<ContextAttachment>>({});
+  const composerSessionsRef = useRef(composerSessions);
+  const composerSession = getComposerSession(composerSessions, composerDraftKey);
+  const contextItems = composerSession.items;
+  const composerRequest = composerSession.request;
+  function updateComposer(key: string, update: (session: ReturnType<typeof getComposerSession<ContextAttachment>>) => ReturnType<typeof getComposerSession<ContextAttachment>>) {
+    composerSessionsRef.current = updateComposerSession(composerSessionsRef.current, key, update);
+    setComposerSessions(composerSessionsRef.current);
+  }
+  function setContextItems(update: (items: ContextAttachment[]) => ContextAttachment[], key = composerDraftKey) {
+    updateComposer(key, (session) => ({ ...session, items: update(session.items) }));
+  }
+  function setComposerRequest(request: ComposerRequest | null | ((current: ComposerRequest | null) => ComposerRequest | null), key = composerDraftKey) {
+    updateComposer(key, (session) => ({ ...session, request: typeof request === "function" ? request(session.request) : request }));
+  }
   const [fileTree, setFileTree] = useState<WorkspaceFileTree>({ entries: [], count: 0, truncated: false });
   const [loadingDirectories, setLoadingDirectories] = useState<Set<string>>(new Set());
   const [openFiles, setOpenFiles] = useState<WorkspaceFilePreview[]>([]);
@@ -1499,7 +1534,6 @@ function App() {
   const [fileSaving, setFileSaving] = useState<Set<string>>(new Set());
   const [fileConflicts, setFileConflicts] = useState<Record<string, string>>({});
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({});
-  const [composerRequest, setComposerRequest] = useState<{ id: string; text: string; mode?: "append" | "replace" } | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const threadOpenRequestRef = useRef(0);
   const openFilesRef = useRef<WorkspaceFilePreview[]>([]);
@@ -1535,7 +1569,7 @@ function App() {
   // Approvals are rendered inside the conversation view, so the open thread is
   // the only one whose prompts can actually be answered. Claiming it here lets
   // the agent veto a write instead of waiting for a prompt nobody can see.
-  const approvalThreadId = activeThreadId ?? (agentBusy && runningOwnerKey === taskOwnerKey ? runningThreadId : null);
+  const approvalThreadId = activeThreadId ?? (agentBusy && runningOwnerKey === composerDraftKey ? runningThreadId : null);
   useEffect(() => {
     if (!approvalThreadId || typeof desktopBridge?.claimApprovals !== "function") return;
     void desktopBridge.claimApprovals(approvalThreadId, true).catch(() => {});
@@ -1560,11 +1594,12 @@ function App() {
   // and paper writing operate inside the session folder: session snapshot →
   // project folder → primary workspace.
   const executionWorkspace = taskSelection.executionRoot;
-  const viewingRunningTask = agentBusy && (runningOwnerKey === taskOwnerKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
+  const viewingRunningTask = agentBusy && (runningOwnerKey === composerDraftKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   executionWorkspaceRef.current = executionWorkspace;
-  const draftNoteKey = `draft:${workspace || "workspace"}`;
-  const noteKey = activeThreadId ?? draftNoteKey;
+  const draftNoteKey = `draft:${composerDraftKey}`;
+  const noteStorageKey = activeThreadId ?? draftNoteKey;
+  const noteKey = composerDraftKey;
   const noteValue = noteLoadedKey === noteKey ? noteValues[noteKey] ?? "" : "";
   noteKeyRef.current = noteKey;
   noteValuesRef.current = noteValues;
@@ -1853,7 +1888,7 @@ function App() {
     let cancelled = false;
     setNoteLoadedKey(null);
     setNoteSaveState("idle");
-    void desktopBridge.getWorkbenchNote(noteKey)
+    void desktopBridge.getWorkbenchNote(noteStorageKey)
       .then((note) => {
         if (cancelled) return;
         setNoteValues((current) => ({ ...current, [noteKey]: note.content }));
@@ -1865,19 +1900,19 @@ function App() {
         setNoteLoadedKey(noteKey);
       });
     return () => { cancelled = true; };
-  }, [noteKey]);
+  }, [noteKey, noteStorageKey]);
 
   useEffect(() => {
     if (noteLoadedKey !== noteKey) return;
     const content = noteValues[noteKey] ?? "";
     setNoteSaveState("saving");
     const timer = window.setTimeout(() => {
-      void desktopBridge.saveWorkbenchNote(noteKey, content)
+      void desktopBridge.saveWorkbenchNote(noteStorageKey, content)
         .then(() => { if (noteKeyRef.current === noteKey) setNoteSaveState("saved"); })
         .catch(() => { if (noteKeyRef.current === noteKey) setNoteSaveState("idle"); });
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [noteKey, noteLoadedKey, noteValues]);
+  }, [noteKey, noteStorageKey, noteLoadedKey, noteValues]);
 
   useEffect(() => {
     if (!workbenchActiveTabs.has("changes")) return;
@@ -1955,11 +1990,35 @@ function App() {
     }
   }
 
+  function moveNewTaskComposer(ownerKey: string, targetKey: string) {
+    if (ownerKey === targetKey) return;
+    const draft = readComposerDraft(ownerKey);
+    if (draft) {
+      const target = readComposerDraft(targetKey);
+      const text = target?.text ? appendComposerText(target.text, draft.text) : draft.text;
+      if (taskDraftKey(taskSelectionRef.current) === targetKey) queueComposerText(targetKey, draft.text);
+      else writeComposerDraft(targetKey, { ...draft, text, selectionStart: text.length, selectionEnd: text.length });
+      writeComposerDraft(ownerKey, null);
+    }
+    const source = getComposerSession(composerSessionsRef.current, ownerKey);
+    updateComposer(targetKey, (target) => ({ ...target, items: [...target.items, ...source.items.filter((item) => !target.items.some((candidate) => candidate.id === item.id))].slice(0, 12), request: source.request && target.request ? { ...target.request, text: appendComposerText(target.request.text, source.request.text) } : source.request ?? target.request }));
+    updateComposer(ownerKey, (current) => ({ ...current, items: [], request: null }));
+    updateQueuedPrompts(targetKey, (current) => [...current, ...(queuedPromptScopesRef.current[ownerKey] ?? [])]);
+    updateQueuedPrompts(ownerKey, []);
+  }
+
+  function queueComposerText(key: string, text: string, mode: "append" | "replace" = "append") {
+    updateComposer(key, (session) => ({ ...session, request: {
+      id: crypto.randomUUID(), mode,
+      text: mode === "append" && session.request ? appendComposerText(session.request.text, text) : text,
+    } }));
+  }
+
   function sendNoteToChat(text: string, mode: "append" | "replace") {
     const content = text.trim();
     if (!content) return;
-    setComposerRequest({ id: crypto.randomUUID(), text: content, mode });
-    if (mainSection !== "chat") setMainSection("chat");
+    queueComposerText(composerDraftKey, content, mode);
+    if (taskDraftKey(taskSelectionRef.current) === composerDraftKey && mainSection !== "chat") setMainSection("chat");
   }
 
   useEffect(() => {
@@ -2225,7 +2284,7 @@ function App() {
         } else if (event.threadId) setNativeStream((current) => ({ threadId: event.threadId!, events: mergeNativeEvent(current.threadId === event.threadId ? current.events : [], event) }));
       }
       const viewingRun = taskSelectionRef.current.dataRoot === run.selection.dataRoot
-        && (taskDraftKey(taskSelectionRef.current) === run.ownerKey || taskSelectionRef.current.threadId === run.threadId);
+        && (taskDraftKey(taskSelectionRef.current) === run.ownerKey || Boolean(taskSelectionRef.current.threadId && taskSelectionRef.current.threadId === run.threadId));
       if (!viewingRun) return;
       if (event.type === "workspace_change" && event.changeSet) {
         setChangeSets((current) => upsertChangeSet(current, event.changeSet!));
@@ -2459,7 +2518,6 @@ function App() {
     setTrajectoryEvents([]);
     setEvents([]);
     setPendingAction(null);
-    setContextItems([]);
     setChangeSets([]);
     setChatViewNonce((current) => current + 1);
   }
@@ -2816,7 +2874,7 @@ function App() {
     const hasPastedImage = submittedContext.some((item) => item.type === "image");
     if (dataFolderLoadingRef.current || (!question && !hasPastedImage)) return false;
     if (activeRunRef.current || commandLockRef.current) {
-      setSelectionError(t("Wait for the running task to finish before sending in another session."));
+      updateComposer(taskDraftKey(taskSelectionRef.current), (session) => ({ ...session, error: t("Wait for the running task to finish before sending in another session.") }));
       return false;
     }
     const requestPrompt = question || "Please analyze the attached image.";
@@ -2826,7 +2884,7 @@ function App() {
     const clientRunId = `research-chat:${crypto.randomUUID()}`;
     activeRunRef.current = { id: clientRunId, ownerKey, selection: owner, threadId: submittedThreadId };
     setRunningOwnerKey(ownerKey);
-    setSelectionError("");
+    updateComposer(ownerKey, (session) => ({ ...session, error: "" }));
 
     setResearchMode(requestedMode);
 
@@ -2848,19 +2906,20 @@ function App() {
       setNativeStream((current) => current.threadId === result.threadId ? { threadId: "", events: [] } : current);
       setNativeQuestions((current) => current.filter((item) => item.threadId !== result.threadId));
       if (submittedThreadId === null) {
-        const draftNote = noteValuesRef.current[draftNoteKey] ?? "";
+        const draftNote = noteValuesRef.current[ownerKey] ?? "";
         if (draftNote.trim()) {
           try {
             await desktopBridge.saveWorkbenchNote(result.threadId, draftNote);
-            await desktopBridge.deleteWorkbenchNote(draftNoteKey);
-            setNoteValues((current) => ({ ...current, [result.threadId]: draftNote, [draftNoteKey]: "" }));
+            await desktopBridge.deleteWorkbenchNote(`draft:${ownerKey}`);
+            setNoteValues((current) => ({ ...current, [taskDraftKey(resultSelection)]: draftNote, [ownerKey]: "" }));
           } catch { /* Keep the draft so it can be recovered. */ }
         }
       }
+      setContextItems((current) => current.filter((item) => !submittedContext.includes(item)), ownerKey);
+      if (submittedThreadId === null) moveNewTaskComposer(ownerKey, taskDraftKey(resultSelection));
       const stillViewingSubmittedThread = taskSelectionRef.current.dataRoot === owner.dataRoot
         && (taskDraftKey(taskSelectionRef.current) === ownerKey || taskSelectionRef.current.threadId === result.threadId);
       if (stillViewingSubmittedThread) {
-        setContextItems((current) => current.filter((item) => !submittedContext.includes(item)));
         clearPendingAssistantDeltas();
         activeThreadIdRef.current = result.threadId;
         setMessages(result.thread.messages.length ? result.thread.messages : initialMessages);
@@ -2875,7 +2934,7 @@ function App() {
       }
       return true;
     } catch (error) {
-      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Archimedes could not start this task.")} ${String(error)}`);
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("Archimedes could not start this task.")} ${String(error)}` }));
       return false;
     } finally {
       if (activeRunRef.current?.id === clientRunId) activeRunRef.current = null;
@@ -2888,7 +2947,7 @@ function App() {
 
   async function interruptResearchTurn() {
     if (!runningThreadId || interrupting) return;
-    const ownerKey = activeRunRef.current?.ownerKey ?? taskOwnerKey;
+    const ownerKey = activeRunRef.current?.ownerKey ?? composerDraftKey;
     setInterrupting(true);
     setEvents((current) => [
       ...current.filter((event) => event.title !== "Cancelling task"),
@@ -2898,21 +2957,21 @@ function App() {
       await desktopBridge.interruptAgent(runningThreadId);
     } catch (error) {
       setInterrupting(false);
-      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Archimedes could not interrupt this task.")} ${String(error)}`);
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("Archimedes could not interrupt this task.")} ${String(error)}` }));
     }
   }
 
-  async function runCommand(command: string, actionId?: string) {
+  async function runCommand(command: string, actionId?: string, owner: TaskSelection = taskSelectionRef.current) {
     const trimmedCommand = command.trim();
     if (!trimmedCommand || runningSession) return;
-    const ownerKey = taskDraftKey(taskSelectionRef.current);
-    openWorkbench("terminal");
+    const ownerKey = taskDraftKey(owner);
+    if (taskDraftKey(taskSelectionRef.current) === ownerKey) openWorkbench("terminal");
     try {
-      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: executionWorkspace, actionId });
+      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: owner.executionRoot, actionId });
       runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
-      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("The command could not start.")} ${String(error)}`);
+      updateComposer(composerDraftKey, (session) => ({ ...session, error: `${t("The command could not start.")} ${String(error)}` }));
     }
   }
 
@@ -3160,7 +3219,8 @@ function App() {
   async function approvePendingAction() {
     const action = pendingAction;
     if (!action) return;
-    const ownerKey = taskOwnerKey;
+    const owner = taskSelectionRef.current;
+    const ownerKey = taskDraftKey(owner);
     const ownerThreadId = approvalThreadId;
     const clear = () => {
       if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
@@ -3170,11 +3230,11 @@ function App() {
     try {
       if (action.source === "agent") await desktopBridge.approveAgentAction(action.id);
       clear();
-      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id);
-      else if (action.kind === "write" && action.payload.path) await refreshWorkspaceFiles();
+      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id, owner);
+      else if (action.kind === "write" && action.payload.path && taskDraftKey(taskSelectionRef.current) === ownerKey) await refreshWorkspaceFiles();
     } catch (error) {
       if (String(error).includes("file changed while awaiting approval")) clear();
-      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not approve this action.")} ${String(error)}`);
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("Could not approve this action.")} ${String(error)}` }));
     }
   }
 
@@ -3187,7 +3247,7 @@ function App() {
   async function rejectPendingAction() {
     const action = pendingAction;
     if (!action) return;
-    const ownerKey = taskOwnerKey;
+    const ownerKey = composerDraftKey;
     const ownerThreadId = approvalThreadId;
     try {
       if (action.source === "agent") await desktopBridge.rejectAgentAction(action.id);
@@ -3195,7 +3255,7 @@ function App() {
       setPendingAction((current) => current?.id === action.id ? null : current);
       clearThreadPendingAction(ownerThreadId);
     } catch (error) {
-      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not reject this action.")} ${String(error)}`);
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("Could not reject this action.")} ${String(error)}` }));
     }
   }
 
@@ -3378,12 +3438,11 @@ function App() {
   // once here and projected by the host loop in the render below. Activate /
   // mount gating (keepMounted · cacheClass · requiresWorkspace · open gate)
   // comes from the module registry, not from scattered conditions.
-  const composerDraftKey = activeThreadId ?? `new:${activeProjectId ?? "none"}:${executionWorkspace}`;
   const sidebarModuleContent: Record<string, ReactNode> = {
     library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
-    news: <NewsView bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
+    news: <NewsView chatTargetLabel={activeThread?.title || t("New conversation")} bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
     "paper-review": <PaperReviewView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} active={mainSection === "paper-review"} />,
     extensions: <ExtensionsView bridge={desktopBridge} workspace={executionWorkspace} tab={extensionsTab} onTabChange={setExtensionsTab} attachedIds={new Set(contextItems.map((item) => item.id))} onAttach={(item) => setContextItems((current) => current.some((candidate) => candidate.id === item.id) ? current : [...current, item].slice(0, 12))} />,
     reproduce: <ReproduceView bridge={desktopBridge} selectedId={reproduceId} onSelect={setReproduceId} />,
@@ -3533,7 +3592,7 @@ function App() {
         <div className={mainSection === "chat" ? `main-view chat-main${sideThread ? " has-side-chat" : ""}` : "main-view knowledge-main"}>
           {mainSection === "chat" && (
             <ConversationView
-              key={activeThreadId ?? `new:${chatViewNonce}`}
+              key={composerDraftKey}
               commentScope={sessionCommentsScope}
               addingComment={commentsOpen}
               commentsShowResolved={sessionTools.commentsShowResolved}
@@ -3561,7 +3620,10 @@ function App() {
               onCommand={runConversationCommand}
               contextSummary={threads.find((thread) => thread.id === activeThreadId)?.context_summary}
               compactedThroughTurnId={threads.find((thread) => thread.id === activeThreadId)?.context_summary_through_turn_id}
-              agentBusy={agentBusy && viewingRunningTask}
+              backgroundTaskBusy={agentBusy && !viewingRunningTask}
+              queuedPrompts={queuedPromptScopes[composerDraftKey] ?? []}
+              onQueuedPromptsChange={(update) => updateQueuedPrompts(composerDraftKey, update)}
+              agentBusy={viewingRunningTask}
               interrupting={interrupting}
               pendingAction={pendingAction}
               changeSets={changeSets}
@@ -3581,6 +3643,7 @@ function App() {
               onOpenFile={openChangedFile}
               showWelcome={activeThreadId === null && messages.length === 1 && messages[0]?.id === "welcome" && !viewingRunningTask}
               onWelcomeAction={openWelcomeWorkflow}
+              submitError={composerSession.error}
               composerRequest={composerRequest}
               draftKey={composerDraftKey}
               initialScrollTop={conversationScrollPositionsRef.current.get(conversationScrollKey) ?? null}
@@ -3730,6 +3793,7 @@ function App() {
             />,
             changes: <ChangesView changeSets={changeSets} hasThread={Boolean(activeThreadId)} onOpenFile={openChangedFile} />,
             notes: <NotesView
+              chatTargetLabel={activeThread?.title || t("New conversation")}
               value={noteValue}
               loading={noteLoadedKey !== noteKey}
               saveState={noteSaveState}
@@ -4068,7 +4132,7 @@ const ConversationHistory = memo(function ConversationHistory({ messages, events
   </div>;
 });
 
-function ConversationView({ messages, events, trajectoryEvents, nativeBackend, harnessBound, onHarnessChange, nativeQuestions, onNativeAnswer, onNativeSteer, workspace, projectId, agentBusy, interrupting, canInterrupt, pendingAction, changeSets, researchMode, reasoningEffort, contextLength, modelCapabilities, contextItems, onOpenWorkspaceSettings, onCommand, contextSummary, compactedThroughTurnId, onSubmit, onInterrupt, onResearchMode, onAddContext, onRemoveContext, onApprove, onReject, onOpenFile, showWelcome, onWelcomeAction, composerRequest, draftKey, currentFile, currentSelection, onComposerRequestApplied, initialScrollTop, onScrollTop, commentScope, addingComment, commentsShowResolved, onExitComments }: {
+function ConversationView({ messages, events, trajectoryEvents, nativeBackend, harnessBound, onHarnessChange, nativeQuestions, onNativeAnswer, onNativeSteer, workspace, projectId, agentBusy, backgroundTaskBusy = false, queuedPrompts, onQueuedPromptsChange, interrupting, canInterrupt, pendingAction, changeSets, researchMode, reasoningEffort, contextLength, modelCapabilities, contextItems, onOpenWorkspaceSettings, onCommand, contextSummary, compactedThroughTurnId, onSubmit, onInterrupt, onResearchMode, onAddContext, onRemoveContext, onApprove, onReject, onOpenFile, showWelcome, onWelcomeAction, composerRequest, draftKey, currentFile, currentSelection, onComposerRequestApplied, submitError, initialScrollTop, onScrollTop, commentScope, addingComment, commentsShowResolved, onExitComments }: {
   commentScope: SessionCommentsScope | null;
   addingComment: boolean;
   commentsShowResolved: boolean;
@@ -4085,6 +4149,9 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   workspace: string;
   projectId?: string | null;
   agentBusy: boolean;
+  backgroundTaskBusy?: boolean;
+  queuedPrompts: QueuedPrompt[];
+  onQueuedPromptsChange: (update: QueuedPrompt[] | ((current: QueuedPrompt[]) => QueuedPrompt[])) => void;
   interrupting: boolean;
   canInterrupt: boolean;
   pendingAction: PendingAction | null;
@@ -4108,7 +4175,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   onOpenFile: (filePath: string) => void;
   showWelcome: boolean;
   onWelcomeAction: (action: ResearchWelcomeAction) => void;
-  composerRequest: { id: string; text: string; mode?: "append" | "replace" } | null;
+  composerRequest: ComposerRequest | null;
+  submitError?: string;
   draftKey: string;
   initialScrollTop: number | null;
   onScrollTop: (top: number) => void;
@@ -4132,12 +4200,11 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const [prompt, setPrompt] = useState(storedDraftRef.current?.text ?? "");
   const [promptHistory, setPromptHistory] = useState<string[]>(readComposerHistory);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const setQueuedPrompts = onQueuedPromptsChange;
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [pendingResearchSkill, setPendingResearchSkill] = useState<"idea-spark" | null>(null);
   const [contextPickerRequest, setContextPickerRequest] = useState(0);
-  const previousBusyRef = useRef(agentBusy);
   const contextUsageTriggerRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const composerBoxRef = useRef<HTMLDivElement>(null);
@@ -4156,7 +4223,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   useEffect(() => {
     if (!composerRequest || appliedComposerRequestRef.current === composerRequest.id) return;
     appliedComposerRequestRef.current = composerRequest.id;
-    setPrompt((current) => composerRequest.mode === "replace" ? composerRequest.text : current.trim() ? `${current.trim()}\n\n${composerRequest.text}` : composerRequest.text);
+    setPrompt((current) => composerRequest.mode === "replace" ? composerRequest.text : appendComposerText(current, composerRequest.text));
     onComposerRequestApplied(composerRequest.id);
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [composerRequest, onComposerRequestApplied]);
@@ -4500,7 +4567,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   }
 
   async function submitCurrentPrompt() {
-    if (slashRunningRef.current) return;
+    if (slashRunningRef.current || backgroundTaskBusy) return;
     const typedCommandText = prompt.trim();
     const typedCommandName = typedCommandText.replace(/^\/+/, "").toLowerCase().replace(/\s+/g, "-");
     const command = /^\/[a-z][a-z\s-]*$/i.test(typedCommandText)
@@ -4533,7 +4600,12 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
     onResearchMode(submittedMode);
     const sent = await onSubmit(draft, submittedMode, reasoningEffort, contextLength, submittedContext, pendingResearchSkill ?? undefined);
     if (sent) setPendingResearchSkill(null);
-    if (!sent) setPrompt((current) => current.trim() ? current : draft);
+    if (!sent) {
+      const laterText = composerRef.current?.value ?? readComposerDraft(draftKey)?.text ?? "";
+      const restored = laterText === draft ? draft : appendComposerText(draft, laterText);
+      writeComposerDraft(draftKey, { text: restored, selectionStart: restored.length, selectionEnd: restored.length, newChatMode });
+      setPrompt(restored);
+    }
     requestAnimationFrame(() => {
       const textarea = composerRef.current;
       if (!textarea) return;
@@ -4544,17 +4616,18 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   }
 
   useEffect(() => {
-    const wasBusy = previousBusyRef.current;
-    previousBusyRef.current = agentBusy;
-    if (!wasBusy || agentBusy || !queuedPrompts.length) return;
+    if (agentBusy || backgroundTaskBusy || !queuedPrompts.length) return;
     const [next, ...rest] = queuedPrompts;
     setQueuedPrompts(rest);
     void onSubmit(next.draft, next.mode, next.reasoningEffort, next.contextLength, next.contextItems, next.researchSkill).then((sent) => {
       if (sent) return;
       setComposerError("A queued follow-up could not be sent. It was restored below.");
-      setPrompt((current) => current.trim() ? current : next.draft);
+      const laterText = composerRef.current?.value ?? readComposerDraft(draftKey)?.text ?? "";
+      const restored = laterText === next.draft ? next.draft : appendComposerText(next.draft, laterText);
+      writeComposerDraft(draftKey, { text: restored, selectionStart: restored.length, selectionEnd: restored.length, newChatMode });
+      setPrompt(restored);
     });
-  }, [agentBusy, queuedPrompts, onSubmit]);
+  }, [agentBusy, backgroundTaskBusy, queuedPrompts, onSubmit]);
 
   const selectWelcomeWorkflow = useCallback((action: ResearchWelcomeAction) => {
     historyHandlersRef.current.onWelcomeAction(action);
@@ -4661,7 +4734,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
             event.preventDefault();
             void submitCurrentPrompt();
           }
-        }} placeholder={pendingResearchSkill ? t("Describe the research direction for Idea Spark...") : showWelcome && newChatMode === "create" ? t("Describe a Research App you want to create.") : activeMode.placeholder} rows={3} aria-label={t("Message Archimedes")} aria-keyshortcuts="Control+L Meta+L" aria-describedby={composerError ? "composer-error" : undefined} />
+        }} placeholder={pendingResearchSkill ? t("Describe the research direction for Idea Spark...") : showWelcome && newChatMode === "create" ? t("Describe a Research App you want to create.") : activeMode.placeholder} rows={3} aria-label={t("Message Archimedes")} aria-keyshortcuts="Control+L Meta+L" aria-describedby={composerError || submitError ? "composer-error" : undefined} />
         <MenuSurface open={slashOpen} onClose={() => setSlashQuery(null)} anchorRef={composerBoxRef} placement="top-start" width={560} minWidth={0} maxHeight={320} className="composer-slash-menu" ariaLabel={t("Composer commands")} focus="none">
           {filteredSlashCommands.map((command, index) => <MenuItem key={command.id} icon={<command.icon size={16} strokeWidth={1.7} />} className={index === slashIndex ? "active" : ""} onMouseEnter={() => setSlashIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => void runSlashCommand(command)}><span className="slash-command-label">{command.label}</span><span className="slash-command-detail">{command.detail}</span></MenuItem>)}
         </MenuSurface>
@@ -4671,7 +4744,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
           <MenuItem icon={<Copy size={18} strokeWidth={1.7} />} shortcut={`${shortcutModifier}C`} disabled={composerRef.current?.selectionStart === composerRef.current?.selectionEnd} onClick={() => { setComposerMenu(null); void copySelection(); }}>{t("Copy")}</MenuItem>
           <MenuItem icon={<Clipboard size={18} strokeWidth={1.7} />} shortcut={`${shortcutModifier}V`} onClick={() => { setComposerMenu(null); void pasteFromSystemClipboard(); }}>{t("Paste")}</MenuItem>
         </MenuSurface>
-        {composerError && <div id="composer-error" className="composer-attachment-error" role="alert">{composerError}</div>}
+        {backgroundTaskBusy && <div className="composer-hint" role="status">{t("Another session is running. Your draft stays here.")}</div>}
+        {(composerError || submitError) && <div id="composer-error" className="composer-attachment-error" role="alert">{composerError || submitError}</div>}
         {commandNotice && <div className="composer-command-notice" role="status">{commandNotice}</div>}
         <div className="conversation-composer-footer">
           <ContextPicker bridge={desktopBridge} workspace={workspace} projectId={projectId} items={contextItems} openRequest={contextPickerRequest} currentFile={currentFile} currentSelection={currentSelection} onAdd={addContextItems} />
@@ -4732,8 +4806,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
             <button
               className="conversation-send"
               onClick={agentBusy ? onInterrupt : () => void submitCurrentPrompt()}
-              disabled={agentBusy ? !canInterrupt : !prompt.trim() && !contextItems.some((item) => item.type === "image")}
-              title={agentBusy ? (interrupting ? t("Stopping task") : t("Stop")) : (prompt.trim() || contextItems.some((item) => item.type === "image")) ? t("Send") : t("Add text or attach an image to send")}
+              disabled={backgroundTaskBusy || (agentBusy ? !canInterrupt : !prompt.trim() && !contextItems.some((item) => item.type === "image"))}
+              title={backgroundTaskBusy ? t("Wait for the running task to finish before sending in another session.") : agentBusy ? (interrupting ? t("Stopping task") : t("Stop")) : (prompt.trim() || contextItems.some((item) => item.type === "image")) ? t("Send") : t("Add text or attach an image to send")}
               aria-label={agentBusy ? (interrupting ? t("Stopping task") : t("Stop")) : t("Send")}
             >
               {agentBusy ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} strokeWidth={2.4} />}
