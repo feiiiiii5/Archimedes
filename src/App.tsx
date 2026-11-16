@@ -2558,7 +2558,7 @@ function App() {
       if (command === "fork" || command === "side") {
         const copy = threadId
           ? await desktopBridge.forkResearchThread(threadId, workspace, command === "side")
-          : await desktopBridge.createResearchThread({ projectId: activeProjectId || undefined, workspacePath: executionWorkspace, mode: researchMode, visibility: threadVisibility, title: t("Side conversation") });
+          : await desktopBridge.createResearchThread({ projectId: activeProjectId || undefined, workspaceId: activeWorkspaceId || undefined, workspacePath: executionWorkspace, mode: researchMode, visibility: threadVisibility, title: t("Side conversation") });
         setThreads((current) => [copy, ...current.filter((item) => item.id !== copy.id)]);
         if (command === "side") { setSideThread(copy); setWorkbenchOpen(false); }
         else await openResearchThread(copy);
@@ -2647,7 +2647,7 @@ function App() {
       setNewProjectName("");
       setNewProjectError("");
       setNewProjectOpen(false);
-      startNewTask(project.id, projectSpaces.find((entry) => entry.is_default)?.id);
+      startNewTask(project.id, projectSpaces.find((entry) => entry.is_default)?.id, [project, ...projects], projectSpaces);
     } catch (error) {
       setNewProjectError(error instanceof Error ? error.message : String(error));
     }
