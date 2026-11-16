@@ -99,10 +99,13 @@ function pinManuscriptSnapshot(root, manifestPath, reference) {
   return checked;
 }
 
-/** Roll back a pin only when its run could not be created; cancelled runs keep inputs. */
+/** Release a reference after failed creation or explicit deletion; cancellation keeps it. */
 function unpinManuscriptSnapshot(root, manifestPath, reference) {
-  const checked = readManuscriptSnapshot(root, manifestPath);
-  const file = path.join(path.dirname(workspacePath(checked.workspace, manifestPath)), "retained-inputs.json");
+  if (!/^\.archimedes\/latex-build\/[a-f0-9]+\/[a-f0-9-]+\/source-snapshot\.json$/.test(manifestPath)) throw new Error("Choose a saved manuscript build snapshot.");
+  let directory;
+  try { directory = workspacePath(root, path.posix.dirname(manifestPath)); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  const file = path.join(directory, "retained-inputs.json");
   if (!fs.existsSync(file)) return;
   const references = JSON.parse(fs.readFileSync(file, "utf8")).filter(item => item.kind !== reference.kind || item.run_id !== reference.run_id);
   if (!references.length) fs.rmSync(file);

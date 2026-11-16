@@ -356,9 +356,15 @@ function listRuns({ projectId = "", limit = 50, ownerDataRoot = "" } = {}) {
 }
 
 function deleteRun(runId) {
+  const run = store.getRun(String(runId));
   const active = activeRuns.get(String(runId));
   if (active) active.controller.abort(new Error("Paper review was deleted."));
-  return store.deleteRun(String(runId));
+  const result = store.deleteRun(String(runId));
+  if (result.deleted && run?.manuscript) {
+    const origin = run.manuscript;
+    require("./manuscript-snapshot.cjs").unpinManuscriptSnapshot(origin.workspace, origin.manifestPath, { kind: "paper-review", run_id: run.id });
+  }
+  return result;
 }
 
 function listPapers({ projectId = "" } = {}) {

@@ -9,7 +9,9 @@ main/source file, project, execution folder, source version and PDF hash.
 The review page shows the prepared source and offers **Return to source
 manuscript**. Starting the review binds that receipt to the actual generated
 review run ID. The retained input stays available as later previews are
-compiled. A failed run creation rolls back its retention reference. Existing
+compiled. Deleting a review releases only that run's retention reference;
+cancelling keeps its historical input. A failed run creation rolls back its
+retention reference. Existing
 review history without a manuscript receipt remains readable; it does not
 gain an invented source association.
 

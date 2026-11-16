@@ -102,3 +102,32 @@ test("the global review database filters same-project-ID histories by data root 
   assert.equal(visible.find(run => run.id === legacy).manuscript, null);
   assert.deepEqual(reviews.getRun(local).manuscript, f.origin);
 });
+
+test("deleting a real review releases only its input pin, including after manuscript sources are removed", async t => {
+  const f = await fixture(t), review = reviewModule(); review.initialize(path.join(f.root, "settings"));
+  const create = async () => {
+    const finished = deferred();
+    const run = await f.owner.run(() => review.createRun({ manuscript: f.origin }, { dataStore: f.owner,
+      emit: event => { if (event.type === "complete") finished.resolve(); },
+    }));
+    await finished.promise; return run.runId;
+  };
+  const first = await create(), second = await create();
+  const snapshots = require("./manuscript-snapshot.cjs"), slides = { kind: "paper-to-slides", run_id: "other-slides-input" };
+  snapshots.pinManuscriptSnapshot(f.source, f.origin.manifestPath, slides);
+  assert.deepEqual(review.deleteRun(first), { deleted: true });
+  const references = () => JSON.parse(fs.readFileSync(f.marker));
+  assert.deepEqual(references().map(item => item.run_id).sort(), [second, slides.run_id].sort());
+  let latest;
+  for (let index = 0; index < 6; index++) {
+    fs.writeFileSync(path.join(f.source, "paper/section.tex"), `Later draft ${index}\n`);
+    latest = await f.compile();
+  }
+  assert.ok(fs.existsSync(path.join(f.source, f.origin.pdfPath)), "other consumers retain their input");
+  fs.rmSync(path.join(f.source, "paper"), { recursive: true });
+  assert.deepEqual(review.deleteRun(second), { deleted: true });
+  assert.deepEqual(references().map(item => item.run_id), [slides.run_id]);
+  snapshots.unpinManuscriptSnapshot(f.source, f.origin.manifestPath, slides);
+  snapshots.pruneManuscriptPreviews(f.source, latest.source_snapshot.manifest_path);
+  assert.equal(fs.existsSync(path.join(f.source, f.origin.pdfPath)), false);
+});
