@@ -27,6 +27,7 @@ export const writing: Record<string, string> = {
   "Command": "命令",
   "Community mirror": "社区镜像",
   "Community mirrors": "社区镜像",
+  "Compile the current manuscript before preparing slides.": "准备幻灯片前，请先编译当前稿件。",
   "Compiling and preparing dependencies": "正在准备依赖并编译",
   "Compiling paper": "正在编译论文",
   "Conference": "学术会议",

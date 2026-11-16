@@ -73,6 +73,8 @@ import packageMetadata from "../package.json";
 import AuthModal from "./AuthModal";
 import { useUISettings } from "./i18n";
 import { moveSidebarOrder, orderSidebarIds, readSidebarOrder, reconcileSidebarOrder, writeSidebarOrder, type SidebarOrderGroup } from "./sidebar-order";
+import type { ManuscriptOpenRequest, ManuscriptOrigin, ManuscriptSource, ManuscriptTarget } from "./manuscript-handoff";
+import type { PaperToSlidesStartInput } from "./PaperToSlidesView";
 import { type PaperOpenRequest } from "./PaperWritingView";
 import { createFileDraft, formatFileComment, isDraftDirty, isEditableFile, markDraftSaved, mergeRefreshedFiles, prepareFileContent, toEditorText, type FileComment, type FileDraft, type FileSelection } from "./file-editor";
 import { shortcutMatches } from "./file-text-size";
@@ -1530,6 +1532,7 @@ function App() {
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState("");
   const [paperOpenRequest, setPaperOpenRequest] = useState<PaperOpenRequest>(null);
+  const [manuscriptRequests, setManuscriptRequests] = useState<Partial<Record<ManuscriptTarget, ManuscriptOpenRequest>>>({});
   const [changeSets, setChangeSets] = useState<WorkspaceChangeSet[]>([]);
   const [papers, setPapers] = useState(initialPapers);
   const [modal, setModal] = useState<Modal>(null);
@@ -1605,6 +1608,7 @@ function App() {
   // and paper writing operate inside the session folder: session snapshot →
   // project folder → primary workspace.
   const executionWorkspace = taskSelection.executionRoot;
+  const presentationSelection = newTaskSelection(workspace, activeProject, workspaces, activeWorkspace?.id);
   const viewingRunningTask = agentBusy && (runningOwnerKey === composerDraftKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   executionWorkspaceRef.current = executionWorkspace;
@@ -3064,6 +3068,54 @@ function App() {
     }
   }
 
+  async function prepareManuscriptHandoff(target: ManuscriptTarget, source: ManuscriptSource) {
+    const selection = taskSelectionRef.current;
+    if (dataFolderLoadingRef.current || !selection.workspaceId || selection.projectId !== source.projectId || selection.executionRoot !== source.workspace) throw new Error(t("Return to the source manuscript project before handing it off."));
+    const origin: ManuscriptOrigin = { ...source, dataRoot: selection.dataRoot, workspaceId: selection.workspaceId, threadId: selection.threadId };
+    const ownerKey = taskDraftKey(selection);
+    setManuscriptRequests((current) => ({ ...current, [target]: { origin, token: crypto.randomUUID() } }));
+    if (hiddenCoreModules.has(target)) await setCoreModuleEnabled(target, true);
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== ownerKey) throw new Error(t("Return to the source manuscript project before handing it off."));
+    setMainSection(target);
+  }
+
+  async function returnToManuscript(origin: ManuscriptOrigin) {
+    if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== origin.dataRoot) throw new Error(t("Return to the manuscript data folder before continuing."));
+    const ownerKey = taskDraftKey(taskSelectionRef.current);
+    let target: TaskSelection;
+    let thread: ResearchThreadDetail | null = null;
+    if (origin.threadId) {
+      thread = await desktopBridge.getResearchThread(origin.threadId, origin.dataRoot);
+      target = threadTaskSelection(origin.dataRoot, thread, workspaces);
+    } else target = newTaskSelection(origin.dataRoot, projects.find((project) => project.id === origin.projectId) || null, workspaces, origin.workspaceId);
+    if (target.projectId !== origin.projectId || target.executionRoot !== origin.workspace) throw new Error(t("The source manuscript folder is no longer connected to this task."));
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== ownerKey) return;
+    if (thread) { threadOpenRequestRef.current += 1; displayThread(thread, origin.dataRoot); } else applyTaskSelection(target);
+    setPaperOpenRequest({ path: origin.selectedPath || origin.mainPath, token: Date.now() }); setMainSection("writing");
+  }
+
+  async function startSlidesFromPaper(input: PaperToSlidesStartInput, owner: TaskSelection) {
+    if (!owner.projectId || !owner.workspaceId || dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot || taskSelectionRef.current.projectId !== owner.projectId || taskSelectionRef.current.workspaceId !== owner.workspaceId) throw new Error(t("Select the presentation project workspace before starting."));
+    if (activeRunRef.current || commandLockRef.current) throw new Error(t("Wait for the running task to finish before starting a presentation."));
+    const originKey = taskDraftKey(taskSelectionRef.current);
+    const thread = await desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId, workspacePath: owner.executionRoot, mode: "free-chat", title: t("Paper presentation") });
+    const target = threadTaskSelection(owner.dataRoot, thread, workspaces);
+    if (target.projectId !== owner.projectId || target.workspaceId !== owner.workspaceId || target.executionRoot !== owner.executionRoot) throw new Error(t("The presentation session does not match its target workspace."));
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== originKey) throw new Error(t("The selected task changed. Return to the presentation and start again."));
+    const staged = await desktopBridge.stagePaperToSlidesPdf(target.executionRoot, input.pdfPath, { threadId: thread.id, ...(input.manuscript ? { manuscript: input.manuscript } : {}) });
+    const prompt = [`Create a paper presentation using the bundled paper2slides skill.`, `Input PDF: ${JSON.stringify(staged)}`, `Slide and speaker-note language: ${input.language}.`, `Length: ${input.length}.`, `Use relevant original figures and tables; check visual quality and factual accuracy. Save an editable PPTX and report the output path.`, input.manuscript ? `Compiled manuscript provenance:\n${JSON.stringify(input.manuscript, null, 2)}` : "", input.instructions ? `Additional user instructions: ${input.instructions}` : ""].filter(Boolean).join("\n");
+    const attachment: ContextAttachment = { id: `slides-pdf:${thread.id}`, type: "file", name: staged.split(/[\\/]/).at(-1) || "paper.pdf", path: /^(?:[a-zA-Z]:[\\/]|\/)/.test(staged) ? staged : `${target.executionRoot.replace(/[\\/]$/, "")}/${staged}`, detail: input.manuscript ? `Compiled manuscript ${input.manuscript.mainPath} · source ${input.manuscript.sourceVersion} · PDF ${input.manuscript.pdfSha256}` : t("Presentation input PDF") };
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== originKey || activeRunRef.current || commandLockRef.current) {
+      const key = taskDraftKey(target), previous = readComposerDraft(key);
+      const text = appendComposerText(previous?.text || "", prompt);
+      writeComposerDraft(key, { ...previous, text, selectionStart: text.length, selectionEnd: text.length });
+      setContextItems((current) => current.some((item) => item.id === attachment.id) ? current : [...current, attachment].slice(0, 12), key);
+      throw new Error(t("The selected task changed. The presentation is saved as a draft in its own session."));
+    }
+    threadOpenRequestRef.current += 1; displayThread(thread, owner.dataRoot); setMainSection("chat");
+    if (!await submitPrompt(prompt, "free-chat", reasoningEffort, contextLength, [attachment], "paper-to-slides", input.backend, false, input.mineruToken || undefined)) throw new Error(t("The presentation task could not start. Its source selection is preserved."));
+  }
+
   function askAIAboutPaper(filePath: string) {
     const absolutePath = `${executionWorkspace.replace(/[\\/]$/, "")}/${filePath.replace(/^\/+/, "")}`;
     const attachment: ContextAttachment = { id: `file:${absolutePath}`, type: "file", name: filePath.split("/").at(-1) || filePath, path: absolutePath, detail: `LaTeX paper source · ${filePath}` };
@@ -3459,14 +3511,8 @@ function App() {
     "image-creation": <ImageCreationView active={mainSection === "image-creation"} onBrowseProceedings={() => { setDailyStartMode("conference"); setMainSection("daily"); }} />,
     "data-charts": <DataChartsView active={mainSection === "data-charts"} />,
     "data-analysis": <DataAnalysisView onAskAI={(text) => sendNoteToChat(text, "replace")} />,
-    "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={executionWorkspace} busy={agentBusy} onStart={async ({ pdfPath, backend, language, length, instructions, mineruToken }) => {
-      const staged = await desktopBridge.stagePaperToSlidesPdf(executionWorkspace, pdfPath);
-      startNewTask();
-      const prompt = [`Create a paper presentation using the bundled paper2slides skill.`, `Input PDF: ${JSON.stringify(staged)}`, `Slide and speaker-note language: ${language}.`, `Length: ${length}.`, `Use relevant original figures and tables; check visual quality and factual accuracy. Save an editable PPTX and report the output path.`, instructions ? `Additional user instructions: ${instructions}` : ""].filter(Boolean).join("\n");
-      await submitPrompt(prompt, "free-chat", reasoningEffort, contextLength, [], "paper-to-slides", backend, true, mineruToken || undefined);
-    }} />,
-
-    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} active={mainSection === "writing"} />,
+    "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={presentationSelection.executionRoot} dataRoot={workspace} projectId={presentationSelection.projectId} ownerKey={taskDraftKey(presentationSelection)} nativeConfig={nativeBackend} onOpenModelSettings={() => { setSettingsSection("models"); setSettingsOpen(true); }} onConfigureSetup={(text) => sendNoteToChat(text, "append")} active={mainSection === "paper-to-slides"} busy={agentBusy} manuscriptRequest={manuscriptRequests["paper-to-slides"]} onReturnToManuscript={returnToManuscript} onStart={(input) => startSlidesFromPaper(input, presentationSelection)} />,
+    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} onHandoff={prepareManuscriptHandoff} active={mainSection === "writing"} />,
   };
   for (const entry of pluginEntries) {
     sidebarModuleContent[entry.id] = <PluginModuleView key={entry.id} entry={entry} />;

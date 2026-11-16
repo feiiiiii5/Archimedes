@@ -1,6 +1,6 @@
 const path = require("node:path");
-const { workspacePath: canonicalWorkspace } = require("./workspace-files.cjs");
-const { readManuscriptSnapshot, pinManuscriptSnapshot, unpinManuscriptSnapshot } = require("./manuscript-snapshot.cjs");
+const { canonicalWorkspace } = require("./workspace-context.cjs");
+const { readManuscriptSnapshot } = require("./manuscript-snapshot.cjs");
 
 function verifyManuscriptOrigin(store, input) {
   if (!input || typeof input !== "object" || canonicalWorkspace(input.dataRoot) !== store.workspace) throw new Error("The manuscript belongs to another data workspace.");
@@ -24,12 +24,4 @@ function verifyManuscriptOrigin(store, input) {
     pdfPath: checked.pdf.path, pdfSha256: checked.pdf.sha256, buildId: checked.build_id };
 }
 
-function retainManuscript(store, input, reference) {
-  const origin = verifyManuscriptOrigin(store, input);
-  pinManuscriptSnapshot(origin.workspace, origin.manifestPath, reference);
-  return { origin, pdfPath: path.join(origin.workspace, origin.pdfPath), rollback() {
-    unpinManuscriptSnapshot(origin.workspace, origin.manifestPath, reference);
-  } };
-}
-
-module.exports = { verifyManuscriptOrigin, retainManuscript };
+module.exports = { verifyManuscriptOrigin };

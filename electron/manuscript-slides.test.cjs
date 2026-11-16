@@ -44,10 +44,14 @@ test("slides copy a historical manuscript to the real target session root with a
   assert.ok(staged.startsWith(`${f.target}${path.sep}`)); assert.deepEqual(fs.readFileSync(staged), fs.readFileSync(pdf));
   const receipt = JSON.parse(fs.readFileSync(path.join(path.dirname(staged), "manuscript-origin.json")));
   assert.equal(receipt.origin.workspace, f.source); assert.equal(receipt.target.executionRoot, f.target); assert.equal(receipt.target.threadId, slides.id);
-  assert.ok(JSON.parse(fs.readFileSync(f.marker)).some(reference => reference.run_id === slides.id && reference.kind === "paper-to-slides"));
+  const snapshot = path.join(path.dirname(staged), receipt.sourceSnapshot);
+  assert.equal(JSON.parse(fs.readFileSync(snapshot)).requested_source.source_version, f.origin.sourceVersion);
   const other = f.owner.createResearchProject({ name: "Other", workspacePath: f.target });
   const otherThread = f.owner.createResearchThread({ projectId: other.id, prompt: "Other", mode: "free-chat" });
   assert.throws(() => stageManuscriptPdf(f.owner, f.target, pdf, { manuscript: f.origin, threadId: otherThread.id }), /another manuscript project/);
   assert.throws(() => stageManuscriptPdf(f.owner, f.target, pdf, { manuscript: { ...f.origin, dataRoot: f.target }, threadId: slides.id }), /another data workspace/);
+  fs.rmSync(path.dirname(pdf), { recursive: true });
+  assert.ok(fs.readFileSync(staged).subarray(0, 4).equals(Buffer.from("%PDF")));
+  assert.equal(JSON.parse(fs.readFileSync(snapshot)).pdf.sha256, f.origin.pdfSha256);
 });
 

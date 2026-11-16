@@ -35,13 +35,13 @@ test('page opens a PDF, switches example and sends the selected harness and sett
   Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
   const React = require('react'), { createRoot } = require('react-dom/client'), icons = require('lucide-react');
   const scope = { React, ...React, ...icons, useUISettings: () => ({ t: key => key }), cover: 'cover.webp', motivation: 'motivation.webp', architecture: 'architecture.webp', collaboration: 'collaboration.webp', results: 'results.webp', examples: 'examples.webp', training: 'training.webp', evaluation: 'evaluation.webp' };
-  const source = fs.readFileSync(path.join(__dirname, '../src/PaperToSlidesView.tsx'), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/export default /g, '');
+  const source = fs.readFileSync(path.join(__dirname, '../src/PaperToSlidesView.tsx'), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/export default /g, '').replace(/^export /gm, '');
   const { transformWithOxc } = await import('vite'); const { code } = await transformWithOxc(source, 'PaperToSlidesView.tsx', { jsx: { runtime: 'classic' } });
   const { PaperToSlidesView } = new Function(...Object.keys(scope), `${code}\nreturn {PaperToSlidesView};`)(...Object.values(scope));
   const root = createRoot(document.getElementById('root')); let submitted;
   const click = node => React.act(async () => { assert.ok(node); node.click(); });
   try {
-    await React.act(async () => root.render(React.createElement(PaperToSlidesView, { bridge: { choosePaperReviewPdf: async () => '/papers/a.pdf' }, workspace: '/work', busy: false, onStart: async input => { submitted = input; } })));
+    await React.act(async () => root.render(React.createElement(PaperToSlidesView, { bridge: { choosePaperReviewPdf: async () => '/papers/a.pdf', getAgentBackendConfig: async () => ({ backend: 'codex' }), checkAgentBackend: async () => ({ ready: true, message: 'fixture' }), checkPaperToSlidesSetup: async () => ({ canStart: true, checks: [] }) }, workspace: '/work', busy: false, onStart: async input => { submitted = input; } })));
     assert.ok(document.querySelector('.slides-primary').disabled);
     await click(document.querySelector('[aria-label="Next slide"]')); assert.match(document.querySelector('.slides-gallery-frame img').src, /motivation/);
     await click(document.querySelector('.slides-secondary')); assert.match(document.querySelector('.slides-file-name').textContent, /a.pdf/);
