@@ -30,6 +30,7 @@ test("late run events and completion cannot adopt an empty task in another proje
     threadsRef: { current: [resultThread] }, refreshingThreadsRef: { current: false },
     setSelectionError: update("error"), setMessages: update("messages"), setEvents: update("events"), setThreads: update("threads"), setPendingAction: update("pending"), setContextItems: update("context"),
     setResearchMode() {}, clearPendingAssistantDeltas() {}, setRunningOwnerKey() {}, setRunningThreadId() {}, setAgentBusy() {}, setInterrupting() {}, setNativeStream() {}, setNativeQuestions() {}, setBoundHarness() {}, setTrajectoryEvents() {}, setChangeSets() {}, setArtifactsVersion() {},
+    updateComposer() {}, moveNewTaskComposer() {},
     applyTaskSelection(next) { scope.taskSelectionRef.current = next; },
     desktopBridge: { runAgent(input) { submitted = input; return pending; }, onAgentEvent(callback) { receive = callback; return () => {}; } },
   };
