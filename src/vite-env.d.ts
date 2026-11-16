@@ -13,6 +13,10 @@ type WorkbenchSettingsSnapshot = {
   layout?: WorkbenchLayoutSnapshot;
 };
 interface ResearchDeskBridge {
+  saveProjectResult?: import("./project-results").ProjectResultsBridge["saveProjectResult"];
+  listProjectResults?: import("./project-results").ProjectResultsBridge["listProjectResults"];
+  getProjectResult?: import("./project-results").ProjectResultsBridge["getProjectResult"];
+  readProjectResultFile?: import("./project-results").ProjectResultsBridge["readProjectResultFile"];
     platform?: string;
     getInitialWorkspace: () => Promise<string | null>;
     getLocalIdentity: () => Promise<LocalIdentity>;

@@ -405,6 +405,20 @@ function schema(db) {
       PRIMARY KEY (library_id, paper_id)
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS project_results (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT NOT NULL REFERENCES research_projects(id) ON DELETE CASCADE,
+      workspace_id TEXT NOT NULL REFERENCES project_workspaces(id) ON DELETE CASCADE,
+      thread_id TEXT REFERENCES research_threads(id) ON DELETE SET NULL,
+      execution_root TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('analysis', 'figure')),
+      title TEXT NOT NULL,
+      manifest_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS project_results_owner ON project_results(project_id, workspace_id, updated_at);
+
     CREATE TABLE IF NOT EXISTS paper_reader_assets (
       paper_id TEXT PRIMARY KEY NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
       source_url TEXT NOT NULL DEFAULT '',
@@ -3277,6 +3291,64 @@ function artifactSha256(thread, normalizedPath) {
   }
 }
 
+function projectResultSummary(row) {
+  return row && { id: row.id, projectId: row.project_id, workspaceId: row.workspace_id, threadId: row.thread_id,
+    executionRoot: row.execution_root, kind: row.kind, title: row.title, manifestPath: row.manifest_path,
+    createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function getProjectResultRecord(id) {
+  const row = requireDatabase().prepare("SELECT * FROM project_results WHERE id = ?").get(id);
+  if (!row) return null;
+  if (!canAccessProject(row.project_id, "viewer")) throw new Error("You do not have access to this project result.");
+  return projectResultSummary(row);
+}
+
+function listProjectResultRecords({ projectId, workspaceId, kind } = {}) {
+  if (!canAccessProject(projectId, "viewer")) throw new Error("You do not have access to this project.");
+  if (kind && !["analysis", "figure"].includes(kind)) throw new Error("Choose an analysis or figure result.");
+  if (workspaceId && getProjectWorkspace(workspaceId)?.project_id !== projectId) throw new Error("The result workspace does not belong to this project.");
+  return requireDatabase().prepare(`SELECT * FROM project_results WHERE project_id = ?
+    AND (? IS NULL OR workspace_id = ?) AND (? IS NULL OR kind = ?) ORDER BY updated_at DESC, id`)
+    .all(projectId, workspaceId || null, workspaceId || null, kind || null, kind || null).map(projectResultSummary);
+}
+
+function registerProjectResult(record) {
+  const db = requireDatabase();
+  if (!canAccessProject(record.projectId, "editor")) throw new Error("You do not have permission to save a project result.");
+  const workspace = getProjectWorkspace(record.workspaceId);
+  if (!workspace || workspace.project_id !== record.projectId) throw new Error("The result workspace does not belong to this project.");
+  const existing = getProjectResultRecord(record.id);
+  const root = normalizeWorkspacePath(record.executionRoot);
+  if (existing && ["projectId", "workspaceId", "kind", "executionRoot", "manifestPath"].some(key => existing[key] !== record[key])) {
+    throw new Error("A project result cannot change its owner or storage path.");
+  }
+  if (!existing && normalizeWorkspacePath(workspace.root) !== root) throw new Error("The result does not belong to this execution folder.");
+  if (record.threadId) {
+    const thread = getResearchThread(record.threadId);
+    if (thread.project_id !== record.projectId || thread.workspace_id !== record.workspaceId || normalizeWorkspacePath(thread.workspace_path) !== root) {
+      throw new Error("The linked session does not belong to this project result.");
+    }
+  }
+  if (!["analysis", "figure"].includes(record.kind) || record.manifestPath !== `research-results/${record.kind}/${record.id}/manifest.json`) throw new Error("Invalid project result path.");
+  db.exec("SAVEPOINT register_project_result");
+  try {
+    db.prepare(`INSERT INTO project_results (id, project_id, workspace_id, thread_id, execution_root, kind, title, manifest_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET thread_id = excluded.thread_id,
+      title = excluded.title, updated_at = excluded.updated_at`).run(record.id, record.projectId, record.workspaceId, record.threadId || null,
+        root, record.kind, String(record.title || ""), record.manifestPath, existing?.createdAt || record.createdAt || timestamp(), record.updatedAt || timestamp());
+    if (record.threadId) for (const file of record.files || []) {
+      if (!["source", "output"].includes(file.role)) continue;
+      const extension = path.extname(file.name).slice(1).toLowerCase();
+      upsertArtifact({ threadId: record.threadId, path: file.path, title: `${record.title}: ${file.name}`,
+        kind: extension === "csv" || extension === "tsv" ? "csv" : extension === "svg" ? "svg" : ["png", "jpg", "jpeg", "webp"].includes(extension) ? "image" : extension === "json" ? "json" : "other",
+        sizeBytes: file.sizeBytes, sha256: file.sha256, modifiedAt: record.updatedAt, source: `project-${record.kind}` });
+    }
+    db.exec("RELEASE register_project_result");
+  } catch (error) { db.exec("ROLLBACK TO register_project_result"); db.exec("RELEASE register_project_result"); throw error; }
+  return getProjectResultRecord(record.id);
+}
+
 function upsertArtifact({ threadId, turnId = null, path: artifactPath, title = "", kind = "other", sizeBytes = 0, modifiedAt = timestamp(), source = "agent", storage = "local", sha256 = "" } = {}) {
   const db = requireDatabase();
   if (!threadId) throw new Error("An artifact needs a research thread.");
@@ -3570,6 +3642,9 @@ function listReproductionAttempts(runId) {
 }
 
 module.exports = {
+  registerProjectResult,
+  getProjectResultRecord,
+  listProjectResultRecords,
   createWorkspaceStore,
   currentStore,
   captureStore,

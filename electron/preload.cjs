@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("researchDesk", {
+  saveProjectResult: (input) => ipcRenderer.invoke("project-results:save", input),
+  listProjectResults: (input) => ipcRenderer.invoke("project-results:list", input),
+  getProjectResult: (id) => ipcRenderer.invoke("project-results:get", { id }),
+  readProjectResultFile: (id, name) => ipcRenderer.invoke("project-results:read-file", { id, name }),
   platform: process.platform,
   getInitialWorkspace: () => ipcRenderer.invoke("window:initial-workspace"),
   getLocalIdentity: () => ipcRenderer.invoke("identity:get"),
