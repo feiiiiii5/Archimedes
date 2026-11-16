@@ -1597,8 +1597,7 @@ function App() {
   const viewingRunningTask = agentBusy && (runningOwnerKey === composerDraftKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   executionWorkspaceRef.current = executionWorkspace;
-  const draftNoteKey = `draft:${composerDraftKey}`;
-  const noteStorageKey = activeThreadId ?? draftNoteKey;
+  const noteStorageKey = `owner:${composerDraftKey}`;
   const noteKey = composerDraftKey;
   const noteValue = noteLoadedKey === noteKey ? noteValues[noteKey] ?? "" : "";
   noteKeyRef.current = noteKey;
@@ -2909,8 +2908,8 @@ function App() {
         const draftNote = noteValuesRef.current[ownerKey] ?? "";
         if (draftNote.trim()) {
           try {
-            await desktopBridge.saveWorkbenchNote(result.threadId, draftNote);
-            await desktopBridge.deleteWorkbenchNote(`draft:${ownerKey}`);
+            await desktopBridge.saveWorkbenchNote(`owner:${taskDraftKey(resultSelection)}`, draftNote);
+            await desktopBridge.deleteWorkbenchNote(`owner:${ownerKey}`);
             setNoteValues((current) => ({ ...current, [taskDraftKey(resultSelection)]: draftNote, [ownerKey]: "" }));
           } catch { /* Keep the draft so it can be recovered. */ }
         }
@@ -2971,7 +2970,7 @@ function App() {
       runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
-      updateComposer(composerDraftKey, (session) => ({ ...session, error: `${t("The command could not start.")} ${String(error)}` }));
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("The command could not start.")} ${String(error)}` }));
     }
   }
 
