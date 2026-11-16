@@ -1,3 +1,13 @@
+// Research data and run identities use the accepted window owner. Settings,
+// dialogs and filesystem-only operations do not need to open its database.
+function isWorkspaceDataChannel(channel) {
+  if (/:(?:get|save|reset)-settings$/.test(channel)) return false;
+  if (/^(?:window|app|auth|model-config|agent-backend|web-search|mcp|speech|sidebar|plugins|extensions|news|identity):/.test(channel)) return false;
+  if (channel.startsWith("workspace:") && channel !== "workspace:open") return false;
+  if (channel.startsWith("terminal:") && channel !== "terminal:run") return false;
+  return true;
+}
+
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -51,4 +61,4 @@ function createWorkspaceIpc({ ipcMain, store, workspaceForEvent }) {
   };
 }
 
-module.exports = { canonicalWorkspace, createWorkspaceIpc, resolveResearchContext };
+module.exports = { canonicalWorkspace, createWorkspaceIpc, resolveResearchContext, isWorkspaceDataChannel };
