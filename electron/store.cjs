@@ -958,6 +958,45 @@ function reconcileInterruptedReproductions(db) {
   return stuck.length;
 }
 
+function reconcileInterruptedResearch(db) {
+  // A non-null local task identifies execution owned by this desktop process.
+  // Cloud-imported turns have no local task and may still be running elsewhere.
+  const turns = db.prepare(`SELECT t.id, t.thread_id, t.task_id, t.assistant_message,
+      r.status AS task_status, r.response AS task_response
+    FROM research_turns t JOIN task_runs r ON r.id = t.task_id
+    WHERE t.status = 'running'`).all();
+  const now = timestamp();
+  const message = "The app closed while this turn was running. You can continue in this chat. Check any partial changes before continuing.";
+  db.exec("BEGIN");
+  try {
+    for (const turn of turns) {
+      // finishTask may have been persisted just before an unexpected exit.
+      const status = turn.task_status === "running" ? "interrupted" : turn.task_status;
+      const response = turn.task_response || turn.assistant_message || message;
+      db.prepare("UPDATE research_turns SET status = ?, assistant_message = ?, completed_at = ? WHERE id = ?").run(status, response, now, turn.id);
+      db.prepare("UPDATE task_runs SET status = ?, response = ? WHERE id = ?").run(status, response, turn.task_id);
+      const sequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS value FROM research_events WHERE turn_id = ?").get(turn.id).value;
+      db.prepare("INSERT INTO research_events (id, thread_id, turn_id, sequence, type, payload_json, created_at) VALUES (?, ?, ?, ?, 'run_recovered', ?, ?)")
+        .run(randomUUID(), turn.thread_id, turn.id, sequence, JSON.stringify({ status, reason: "owning_process_exited" }), now);
+    }
+    for (const threadId of new Set(turns.map(turn => turn.thread_id))) {
+      // Sync can add a cloud-owned running turn to the same conversation. Only
+      // the orphaned local turns were ended; summarize the remaining history.
+      const running = db.prepare("SELECT 1 FROM research_turns WHERE thread_id = ? AND status = 'running' LIMIT 1").get(threadId);
+      const latest = db.prepare("SELECT status FROM research_turns WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(threadId);
+      const status = running ? "running" : ["failed", "incomplete"].includes(latest?.status) ? "error" : "idle";
+      db.prepare("UPDATE research_threads SET status = ?, updated_at = ? WHERE id = ?").run(status, now, threadId);
+    }
+    db.prepare("UPDATE task_runs SET status = 'interrupted', response = CASE WHEN response = '' THEN ? ELSE response END WHERE status = 'running'").run(message);
+    db.prepare("UPDATE agent_actions SET status = 'rejected', resolved_at = ? WHERE status = 'pending'").run(now);
+    db.prepare("UPDATE command_runs SET status = 'interrupted', completed_at = ? WHERE status = 'running'").run(now);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function canonicalizeStoredWorkspacePaths(db) {
   for (const [table, column] of [["research_projects", "workspace_path"], ["research_threads", "workspace_path"], ["project_workspaces", "root"]]) {
     const rows = db.prepare(`SELECT id, ${column} AS root FROM ${table} WHERE ${column} IS NOT NULL AND ${column} <> ''`).all();
@@ -1015,6 +1054,7 @@ function initializeWorkspace(state, workspacePath) {
   canonicalizeStoredWorkspacePaths(database);
   backfillPaperRepositories(database);
   reconcileInterruptedReproductions(database);
+  reconcileInterruptedResearch(database);
   migrateLegacyTasks(database);
   seedLibraries(database);
   ensureProjectLibraries(database);
