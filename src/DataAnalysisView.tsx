@@ -159,7 +159,12 @@ export default function DataAnalysisView({ ownerKey = "preview", owner, bridge, 
         const previous = current[ownerKey] ?? emptyState;
         return previous.inputId === inputId && (editVersions.current.get(ownerKey) ?? 0) === savedVersion ? { ...current, [ownerKey]: { ...previous, resultId: saved.id, threadId, notice: t("Analysis snapshot saved to this project.") } } : current;
       });
-      await refreshResults(); return saved;
+      // The list request is routed through the active data directory. If the
+      // user moved to another directory while saving, refreshing here would
+      // query this project's ID in the wrong store. Reopening the original
+      // owner reloads its list through the normal effect.
+      if (activeInputRef.current.ownerKey === ownerKey) await refreshResults();
+      return saved;
     } finally { setField("saving", false); }
   }
 

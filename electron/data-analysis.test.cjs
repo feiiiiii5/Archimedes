@@ -232,3 +232,45 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
 
   } finally { await React.act(async () => root.unmount()); dom.window.close(); fs.rmSync(directory, { recursive: true, force: true }); for (const [key, value] of Object.entries(savedGlobals)) value === undefined ? delete global[key] : global[key] = value; }
 });
+
+test("a save that finishes after switching data folders does not list the old project in the new store", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const keys = ["window", "document", "HTMLElement", "Node", "XMLSerializer", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"];
+  const savedGlobals = Object.fromEntries(keys.map((key) => [key, global[key]]));
+  Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, XMLSerializer: dom.window.XMLSerializer, getComputedStyle: dom.window.getComputedStyle, IS_REACT_ACT_ENVIRONMENT: true });
+  const React = require("react"), { createRoot } = require("react-dom/client"), icons = require("lucide-react");
+  Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map((name) => [name, icons[name]])), useUISettings: () => ({ t: (key) => key }) });
+  await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
+  scope.format = scope.formatAnalysisNumber; await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
+  let releaseSave;
+  const saveGate = new Promise((resolve) => { releaseSave = resolve; });
+  const listCalls = [];
+  const owners = {
+    a: { dataRoot: "/data-a", projectId: "project-a", workspaceId: "workspace-a", executionRoot: "/data-a" },
+    b: { dataRoot: "/data-b", projectId: "project-b", workspaceId: "workspace-b", executionRoot: "/data-b" },
+  };
+  const bridge = {
+    saveProjectResult: async (input) => {
+      await saveGate;
+      return { id: "saved-a", projectId: input.projectId, workspaceId: input.workspaceId, kind: "analysis", fileState: "ready" };
+    },
+    listProjectResults: async ({ projectId }) => { listCalls.push(projectId); return []; },
+  };
+  const root = createRoot(document.getElementById("root"));
+  const render = async (key) => React.act(async () => root.render(React.createElement(scope.DataAnalysisView, { ownerKey: key, owner: owners[key], bridge })));
+  try {
+    await render("a");
+    const save = [...document.querySelectorAll("button")].find((item) => item.textContent === "Save analysis to project");
+    assert.ok(save);
+    await React.act(async () => { save.click(); await Promise.resolve(); });
+    await render("b");
+    const beforeRelease = listCalls.length;
+    await React.act(async () => { releaseSave(); await saveGate; await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.deepEqual(listCalls.slice(beforeRelease), [], "the delayed A save must not list project-a through the B data folder");
+    assert.ok(listCalls.includes("project-b"));
+  } finally {
+    releaseSave();
+    await React.act(async () => root.unmount()); dom.window.close();
+    for (const [key, value] of Object.entries(savedGlobals)) value === undefined ? delete global[key] : global[key] = value;
+  }
+});
