@@ -69,7 +69,7 @@ const { searchConferencePapers } = require("./conferences.cjs");
 const skillCatalog = require("./skill-catalog.cjs");
 const speech = require("./speech.cjs");
 const store = require("./store.cjs");
-const { createWorkspaceIpc } = require("./workspace-context.cjs");
+const { createWorkspaceIpc, resolveResearchContext } = require("./workspace-context.cjs");
 const workspaceFiles = require("./workspace-files.cjs");
 const latexWorkspace = require("./latex-workspace.cjs");
 const { preparePaperReader } = require("./library-reader.cjs");
@@ -1896,7 +1896,8 @@ app.whenReady().then(async () => {
     const workspace = resolveWorkspace(input.workspace);
     // Research data stays in the window's primary workspace, while the Agent
     // operates inside the project/session folder.
-    const contextItems = await sanitizeAgentContext(input.contextItems, workspace);
+    const context = resolveResearchContext(store.currentStore(), { ...input, workspace });
+    const contextItems = await sanitizeAgentContext(input.contextItems, context.workspace);
     const clientRunId = typeof input.clientRunId === "string" && input.clientRunId ? input.clientRunId : undefined;
     const configuredBackend = agentBackendConfig.get();
     const selectedBackend = input.backend || configuredBackend.backend;
@@ -1918,10 +1919,10 @@ app.whenReady().then(async () => {
       mineruToken: input.mineruToken || undefined,
       externalSignal,
       prompt: input.prompt.trim(),
-      workspace,
+      workspace: context.workspace,
       threadId: typeof input.threadId === "string" && input.threadId ? input.threadId : undefined,
-      projectId: typeof input.projectId === "string" && input.projectId ? input.projectId : undefined,
-      workspaceId: typeof input.workspaceId === "string" && input.workspaceId ? input.workspaceId : undefined,
+      projectId: context.projectId,
+      workspaceId: context.workspaceId,
       visibility: input.visibility === "private" ? "private" : "project",
       mode,
       reasoningEffort,
