@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { resolveResearchContext } = require("./workspace-context.cjs");
 const { randomUUID } = require("node:crypto");
 const defaultStore = require("./store.cjs");
 const { getActiveModelConfig } = require("./model-config.cjs");
@@ -990,12 +991,14 @@ async function runAgent(options) {
 
 async function runAgentInStore({ prompt, workspace, threadId, projectId, workspaceId, visibility = "project", mode = "standard", researchSkill, mineruToken, reasoningEffort = "medium", contextLength = "standard", contextItems = [], capabilities, origin, title, emit = () => {}, browser, transient = false, externalBackend = null, externalSignal, toolRegistry = defaultToolRegistry, dataStore }) {
   const store = dataStore;
+  const context = transient ? null : resolveResearchContext(store, { threadId, projectId, workspaceId, workspace });
+  if (context) ({ workspace, projectId, workspaceId } = context);
   if (externalBackend && (transient || origin !== "research" || capabilities?.write !== "ask" || capabilities?.command !== "ask")) throw new Error("The native backend is available only for main Work conversations with an approval surface.");
   const transientThread = {
     id: randomUUID(), project_id: null, title: "Internal review run", mode, status: "running", context_summary: "",
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(), archived_at: null, turn_count: 0, last_turn_at: new Date().toISOString(),
   };
-  const thread = transient ? transientThread : threadId ? store.getResearchThread(threadId) : store.createResearchThread({ prompt, mode, projectId, workspacePath: workspace, workspaceId, visibility, kind: origin === "paper" ? "paper" : "research", title });
+  const thread = transient ? transientThread : context.thread || store.createResearchThread({ prompt, mode, projectId, workspacePath: workspace, workspaceId, visibility, kind: origin === "paper" ? "paper" : "research", title });
   if (!transient && origin !== "paper") store.bindResearchThreadHarness(thread.id, externalBackend?.backend || "api");
   const runtimeId = store.runtimeThreadId(thread.id);
   if (activeRuns.has(runtimeId)) throw new Error("This research thread already has a running turn.");

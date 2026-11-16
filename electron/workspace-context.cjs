@@ -1,3 +1,30 @@
+const fs = require("node:fs");
+const path = require("node:path");
+
+function canonicalWorkspace(value) {
+  if (typeof value !== "string" || !value.trim()) throw new Error("A workspace folder is required.");
+  const root = fs.realpathSync(path.resolve(value));
+  if (!fs.statSync(root).isDirectory()) throw new Error("The workspace is not a folder.");
+  return root;
+}
+
+/** A window selects the data store; project/session records select execution. */
+function resolveResearchContext(store, input = {}) {
+  const thread = input.threadId ? store.getResearchThread(input.threadId) : null;
+  if (thread?.archived_at) throw new Error("Restore this conversation before continuing it.");
+  if (thread && input.projectId && input.projectId !== thread.project_id) throw new Error("The conversation does not belong to the selected project.");
+  const projectId = thread?.project_id || input.projectId;
+  const project = projectId ? store.getResearchProject(projectId) : store.defaultResearchProject();
+  if (!project || project.archived_at || !store.canAccessProject(project.id, "editor")) throw new Error("You do not have access to run a conversation in this project.");
+  if (thread?.workspace_id && input.workspaceId && thread.workspace_id !== input.workspaceId) throw new Error("The conversation does not belong to the selected project workspace.");
+  const workspaceId = thread?.workspace_id || input.workspaceId;
+  const workspace = workspaceId ? store.getProjectWorkspace(workspaceId) : store.defaultProjectWorkspace(project.id);
+  if (!workspace || workspace.project_id !== project.id) throw new Error("That workspace does not belong to this project.");
+  const executionRoot = canonicalWorkspace(thread?.workspace_path || workspace.root || project.workspace_path || store.workspace);
+  if (input.workspace && canonicalWorkspace(input.workspace) !== executionRoot) throw new Error("The execution folder does not match this conversation or project workspace.");
+  return { dataRoot: store.workspace, projectId: project.id, workspaceId: workspace.id, workspace: executionRoot, thread };
+}
+
 /** Each invocation retains the sender's store even after the window switches. */
 function createWorkspaceIpc({ ipcMain, store, workspaceForEvent }) {
   return {
@@ -19,4 +46,4 @@ function createWorkspaceIpc({ ipcMain, store, workspaceForEvent }) {
   };
 }
 
-module.exports = { createWorkspaceIpc };
+module.exports = { canonicalWorkspace, createWorkspaceIpc, resolveResearchContext };
