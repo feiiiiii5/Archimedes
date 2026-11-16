@@ -1,4 +1,4 @@
-import { appendComposerText, getComposerSession, updateComposerSession, type ComposerRequest, type ComposerSessions } from "./composer-session";
+import { appendComposerText, getComposerSession, resolveComposerKey, updateComposerSession, type ComposerKeyAliases, type ComposerRequest, type ComposerSessions } from "./composer-session";
 import { newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -1500,17 +1500,22 @@ function App() {
   const [queuedPromptScopes, setQueuedPromptScopes] = useState<Record<string, QueuedPrompt[]>>({});
   const queuedPromptScopesRef = useRef(queuedPromptScopes);
   function updateQueuedPrompts(key: string, update: QueuedPrompt[] | ((current: QueuedPrompt[]) => QueuedPrompt[])) {
-    const current = queuedPromptScopesRef.current[key] ?? [];
-    queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [key]: typeof update === "function" ? update(current) : update };
+    const resolvedKey = resolveComposerKey(composerKeyAliasesRef.current, key);
+    const current = queuedPromptScopesRef.current[resolvedKey] ?? [];
+    queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [resolvedKey]: typeof update === "function" ? update(current) : update };
     setQueuedPromptScopes(queuedPromptScopesRef.current);
   }
   const [composerSessions, setComposerSessions] = useState<ComposerSessions<ContextAttachment>>({});
   const composerSessionsRef = useRef(composerSessions);
+  // A submitted draft key stays reachable until the user starts another draft
+  // there, so attachment callbacks that resolve after the thread is created
+  // still land in that thread instead of a drained temporary composer.
+  const composerKeyAliasesRef = useRef<ComposerKeyAliases>({});
   const composerSession = getComposerSession(composerSessions, composerDraftKey);
   const contextItems = composerSession.items;
   const composerRequest = composerSession.request;
   function updateComposer(key: string, update: (session: ReturnType<typeof getComposerSession<ContextAttachment>>) => ReturnType<typeof getComposerSession<ContextAttachment>>) {
-    composerSessionsRef.current = updateComposerSession(composerSessionsRef.current, key, update);
+    composerSessionsRef.current = updateComposerSession(composerSessionsRef.current, resolveComposerKey(composerKeyAliasesRef.current, key), update);
     setComposerSessions(composerSessionsRef.current);
   }
   function setContextItems(update: (items: ContextAttachment[]) => ContextAttachment[], key = composerDraftKey) {
@@ -1937,6 +1942,14 @@ function App() {
   }, [activeThreadId, artifactsVersion, workbenchOpen, workbenchActiveTabs]);
 
   function applyTaskSelection(next: TaskSelection) {
+    // Selecting a fresh draft at this key makes its composer authoritative
+    // again; otherwise the previous thread would keep receiving its updates.
+    const key = taskDraftKey(next);
+    if (composerKeyAliasesRef.current[key]) {
+      const remaining = { ...composerKeyAliasesRef.current };
+      delete remaining[key];
+      composerKeyAliasesRef.current = remaining;
+    }
     taskSelectionRef.current = next;
     activeThreadIdRef.current = next.threadId;
     setTaskSelection(next);
@@ -2015,6 +2028,9 @@ function App() {
     updateComposer(ownerKey, (current) => ({ ...current, items: [], request: null }));
     updateQueuedPrompts(targetKey, (current) => [...current, ...(queuedPromptScopesRef.current[ownerKey] ?? [])]);
     updateQueuedPrompts(ownerKey, []);
+    // Attachment callbacks started before this move may resolve later with the
+    // old draft key. Let them reach the session that now owns that draft.
+    composerKeyAliasesRef.current = { ...composerKeyAliasesRef.current, [ownerKey]: targetKey };
   }
 
   function queueComposerText(key: string, text: string, mode: "append" | "replace" = "append") {
