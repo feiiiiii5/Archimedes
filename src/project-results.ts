@@ -7,8 +7,11 @@ export type ProjectResultDetail = ProjectResultSummary & { manifest: Record<stri
 export type SaveProjectResultInput = { id?: string; projectId: string; workspaceId?: string; threadId?: string | null; kind: ProjectResultKind; title: string; manifest: Record<string, unknown>; files: ProjectResultFile[] };
 export type ProjectResultFileReceipt = Pick<ProjectResultFile, "name" | "encoding" | "content"> & { sha256: string; actualSha256: string; fileState: "ready" | "changed" };
 export type ProjectResultsBridge = {
+  linkProjectResultThread(id: string, threadId: string): Promise<ProjectResultDetail>;
   saveProjectResult(input: SaveProjectResultInput): Promise<ProjectResultDetail>;
   listProjectResults(input: { projectId: string; workspaceId?: string; kind?: ProjectResultKind }): Promise<ProjectResultSummary[]>;
   getProjectResult(id: string): Promise<ProjectResultDetail>;
   readProjectResultFile(id: string, name: string): Promise<ProjectResultFileReceipt>;
 };
+
+export type AnalysisChatInput = { id: string; name: string; threadId?: string | null; resultId?: string; sourcePath?: string; attachSource?: boolean };

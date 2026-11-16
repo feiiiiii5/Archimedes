@@ -31,3 +31,7 @@ export function taskDraftKey(selection: TaskSelection): string {
   return selection.threadId ? `thread:${JSON.stringify([selection.dataRoot, selection.threadId])}`
     : `new:${JSON.stringify([selection.dataRoot, selection.projectId, selection.workspaceId, selection.executionRoot])}`;
 }
+
+export function analysisOwnerKey(selection: TaskSelection): string {
+  return JSON.stringify([selection.dataRoot, selection.projectId, selection.workspaceId, selection.executionRoot]);
+}

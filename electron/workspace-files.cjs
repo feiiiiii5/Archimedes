@@ -13,7 +13,7 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 const IMAGE_EXTENSIONS = new Set([".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 const MAX_SNAPSHOT_ENTRIES = 5_000;
-const MAX_TEXT_BYTES = 2_000_000;
+const MAX_TEXT_BYTES = 10 * 1024 * 1024;
 const MAX_SNAPSHOT_TEXT_BYTES = 1_000_000;
 const MAX_SNAPSHOT_TOTAL_TEXT_BYTES = 8_000_000;
 

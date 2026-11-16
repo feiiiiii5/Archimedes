@@ -14,6 +14,15 @@ function registerProjectResultCommands({ ipcMain, store, files = packages }) {
   ipcMain.handle("project-results:list", (_event, input = {}) => store.listProjectResultRecords(input));
   ipcMain.handle("project-results:get", (_event, { id } = {}) => files.readPackage(required(id)));
   ipcMain.handle("project-results:read-file", (_event, { id, name } = {}) => files.readPackageFile(required(id), name));
+  ipcMain.handle("project-results:link-thread", (_event, { id, threadId } = {}) => {
+    const record = required(id);
+    if (!store.canAccessProject(record.projectId, "editor")) throw new Error("You do not have permission to save a project result.");
+    if (!threadId) throw new Error("A saved discussion is required.");
+    const detail = files.readPackage(record);
+    if (detail.fileState !== "ready") throw new Error("The saved result files changed or are missing.");
+    store.registerProjectResult({ ...detail, threadId });
+    return { ...detail, threadId };
+  });
   ipcMain.handle("project-results:save", (_event, input = {}) => {
     const existing = input.id ? required(input.id) : null;
     if (existing && (input.projectId !== existing.projectId || input.kind !== existing.kind

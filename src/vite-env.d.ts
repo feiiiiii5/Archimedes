@@ -17,6 +17,7 @@ interface ResearchDeskBridge {
   listProjectResults?: import("./project-results").ProjectResultsBridge["listProjectResults"];
   getProjectResult?: import("./project-results").ProjectResultsBridge["getProjectResult"];
   readProjectResultFile?: import("./project-results").ProjectResultsBridge["readProjectResultFile"];
+  linkProjectResultThread?: import("./project-results").ProjectResultsBridge["linkProjectResultThread"];
     platform?: string;
     getInitialWorkspace: () => Promise<string | null>;
     getLocalIdentity: () => Promise<LocalIdentity>;
@@ -105,7 +106,7 @@ interface ResearchDeskBridge {
     onLatexCompileProgress?: (callback: (input: { path: string; stage: string; log?: string }) => void) => () => void;
     getResearchTurnImage: (threadId: string, turnId: string, position: number, workspace?: string) => Promise<string | null>;
     getResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
-    createResearchThread: (input: { projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
+    createResearchThread: (input: { basedOnResultId?: string; projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
     forkResearchThread: (threadId: string, workspace?: string, side?: boolean) => Promise<ResearchThreadDetail>;
     undoResearchTurn: (threadId: string, workspace?: string) => Promise<{ thread: ResearchThreadDetail; prompt: string; backupThreadId: string }>;
     compactResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
@@ -1725,6 +1726,7 @@ interface ResearchComment {
 }
 
 interface ResearchThread {
+  based_on_result_id?: string | null;
   id: string;
   kind?: "research" | "paper";
   harness?: "api" | "codex" | "claude" | "opencode" | null;

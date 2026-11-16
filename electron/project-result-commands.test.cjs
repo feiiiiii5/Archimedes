@@ -7,6 +7,7 @@ const test = require("node:test");
 const store = require("./store.cjs");
 const { createWorkspaceIpc } = require("./workspace-context.cjs");
 const { registerProjectResultCommands } = require("./project-result-commands.cjs");
+const { registerThreadCommands } = require("./thread-commands.cjs");
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-result-commands-")));
@@ -20,6 +21,7 @@ function fixture(t) {
   const handlers = new Map();
   const ipcMain = createWorkspaceIpc({ ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) }, store, workspaceForEvent: () => selected });
   registerProjectResultCommands({ ipcMain, store });
+  registerThreadCommands({ ipcMain, store, dataWorkspace: () => selected });
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8"), { process, require(name) {
     assert.equal(name, "electron");
     return { contextBridge: { exposeInMainWorld: (_name, value) => { bridge = value; } }, ipcRenderer: {
@@ -85,3 +87,29 @@ test("viewers can reopen result files and see changed hashes but cannot save or 
   } finally { store.setLocalIdentity({ userId: "local-user", displayName: "Local user", deviceId: "local-device", deviceName: "This device" }); }
 });
 
+
+
+test("an analysis result creates a persisted discussion in its original registered folder", async t => {
+  const f = fixture(t), saved = await f.bridge.saveProjectResult(f.input);
+  f.owner.setResearchProjectWorkspace(f.project.id, f.next);
+  const thread = await f.bridge.createResearchThread({ basedOnResultId: saved.id, projectId: f.project.id, workspaceId: f.workspace.id, workspacePath: f.execution, title: "Continue the saved analysis" });
+  assert.equal(thread.workspace_path, f.execution);
+  assert.equal(thread.based_on_result_id, saved.id);
+  const manifestBeforeLink = fs.readFileSync(path.join(f.execution, saved.manifestPath), "utf8");
+  const linked = await f.bridge.linkProjectResultThread(saved.id, thread.id);
+  assert.equal(linked.threadId, thread.id);
+  assert.equal(fs.readFileSync(path.join(f.execution, saved.manifestPath), "utf8"), manifestBeforeLink);
+  assert.deepEqual(linked.files, saved.files);
+  await assert.rejects(f.bridge.createResearchThread({ basedOnResultId: saved.id, projectId: f.project.id, workspaceId: f.workspace.id, workspacePath: f.next }), /execution folder/);
+  f.owner.close();
+  const reopened = store.createWorkspaceStore(f.data);
+  assert.equal(reopened.getResearchThread(thread.id).based_on_result_id, saved.id);
+});
+
+test("complete accepted CSV sources above the old read cap remain available to workspace tools", async t => {
+  const f = fixture(t), content = "label,value\n" + "x".repeat(9 * 1024 * 1024) + ",2\nlast,3\n";
+  const saved = await f.bridge.saveProjectResult({ ...f.input, files: [{ name: "source.csv", role: "source", encoding: "utf8", content }] });
+  const source = saved.files[0];
+  assert.equal(require("./workspace-files.cjs").readWorkspaceFile(f.execution, source.path).content, content);
+  assert.match(require("./agent/workspace-tools.cjs").readLines(f.execution, source.path, 3, 3).content, /last,3/);
+});
