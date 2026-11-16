@@ -10,6 +10,9 @@ import { fingerprintFor } from "./proactive-engine";
 import { emitProactiveSignal } from "./proactive-signals";
 import { findSourceMatches, sourceMarksByLine, type SourceMark } from "./paper-source-search";
 import { createWritingDocument, createWritingScope, editWritingDocument, saveWritingDocument, readWritingLocation, rememberWritingLocation, type WritingScope } from "./paper-writing-state";
+import PaperWritingCitations, { type CitationAction } from "./PaperWritingCitations";
+import { manuscriptBibliographyPaths, prepareManuscriptCitation } from "./paper-writing-citations";
+import type { BibliographyPaper } from "./bibliography";
 import "./paper-source-search.css";
 import "./paper-writing-workspace.css";
 
@@ -201,6 +204,7 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
   const createOpen = Boolean(createKind) && active;
   const [createName, setCreateName] = scoped("createName");
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const [citationOwner, setCitationOwner] = useState<{ owner: WritingScope; projectId: string; mainPath: string; path: string; start: number; end: number } | null>(null);
   const lineNumbersRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -307,8 +311,50 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
     rememberWritingLocation(window.localStorage, owner.workspace, projectId, { projectPath: activeProject, mainPath, selectedPath: file.path });
   }, [activeProject, file?.path, mainPath, owner.workspace, projectId]);
 
+  function openCitations() {
+    if (!projectId || !currentDocument || ext(currentDocument.file.path) !== "tex" || !mainPath) return;
+    const editor = editorRef.current;
+    setCitationOwner({ owner, projectId, mainPath, path: currentDocument.file.path, start: editor?.selectionStart ?? draft.length, end: editor?.selectionEnd ?? draft.length });
+  }
+  async function applyCitation(paper: BibliographyPaper, bibPath: string, action: CitationAction) {
+    const selected = citationOwner;
+    if (!selected || selected.owner.fileOperationBusy) throw new Error(t("The manuscript is busy. Try again after saving."));
+    const targetOwner = selected.owner, directory = projectRoot(selected.mainPath);
+    if (!bibPath.endsWith(".bib") || bibPath.startsWith("/") || bibPath.split(/[\\/]/).some(part => part === ".." || part.startsWith(".")) || directory && !bibPath.startsWith(`${directory}/`)) throw new Error(t("Choose a .bib file inside this manuscript folder."));
+    targetOwner.fileOperationBusy = true; refreshScope();
+    try {
+      let bibliography = targetOwner.documents.get(bibPath);
+      if (!bibliography) {
+        let content: WorkspaceFilePreview;
+        try { content = await bridge.readWorkspaceFile(targetOwner.workspace, bibPath); }
+        catch (reason) {
+          if (!String(reason).includes("ENOENT")) throw reason;
+          content = { path: bibPath, name: bibPath.split("/").at(-1) || bibPath, kind: "text", content: "", size: 0, modifiedAt: "" };
+        }
+        bibliography = createWritingDocument(targetOwner.workspace, content); targetOwner.documents.set(bibPath, bibliography);
+      }
+      const prepared = prepareManuscriptCitation(bibliography.draft, paper, action !== "insert");
+      if (action !== "insert") {
+        editWritingDocument(bibliography, prepared.content);
+        await saveWritingDocument(bibliography, bridge.writeWorkspaceFile, refreshScope);
+      }
+      if (action !== "update") {
+        const document = targetOwner.documents.get(selected.path);
+        if (!document) throw new Error(t("Open the manuscript source before inserting a citation."));
+        const snippet = `\\cite{${prepared.citekey}}`;
+        const position = Math.min(selected.start, document.draft.length), end = Math.min(selected.end, document.draft.length);
+        editWritingDocument(document, document.draft.slice(0, position) + snippet + document.draft.slice(end));
+        selected.start = selected.end = position + snippet.length;
+        await saveWritingDocument(document, bridge.writeWorkspaceFile, refreshScope);
+      }
+      targetOwner.compileResult = null; targetOwner.compileState = "idle"; targetOwner.compileSequence++;
+      if (owner === targetOwner) await loadDirectory(directory || ".", true);
+      return action === "insert" ? t("Citation inserted. The .bib file was kept as written.") : action === "update" ? t("Bibliography entry updated. Its citation key was preserved.") : t("Citation inserted and bibliography entry saved.");
+    } finally { targetOwner.fileOperationBusy = false; refreshScope(); }
+  }
+
   const compile = useCallback(async (target = mainPath) => {
-    if (!target) return;
+    if (!target || owner.fileOperationBusy) return;
     owner.compileTarget = target;
     const requestId = `${compileRequestPrefix}:${++compileRequestSequence.current}`;
     owner.compileRequestId = requestId;
@@ -595,9 +641,10 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
   } as React.CSSProperties : undefined;
 
   return <div className="paper-writing-page" data-surface="writing">
+    {citationOwner && active && citationOwner.owner === owner && citationOwner.projectId === projectId && citationOwner.mainPath === mainPath && <PaperWritingCitations key={`${projectId}:${citationOwner.mainPath}`} bridge={bridge} projectId={citationOwner.projectId} mainPath={citationOwner.mainPath} bibliographyPaths={[...new Set([...manuscriptBibliographyPaths(owner.documents.get(mainPath)?.draft || "", mainPath), ...[...owner.documents.keys()].filter(name => ext(name) === "bib")])]} onClose={() => setCitationOwner(null)} onApply={applyCitation} />}
     <div className={browserCollapsed && widePanes ? "paper-writing-workspace browser-collapsed" : "paper-writing-workspace"} ref={workspaceRef} style={paneStyle}>
       <aside className="paper-source-browser"><div className="paper-browser-title"><FolderOpen size={14} /><strong>{projectLabel}</strong>{activeProject && <div className="paper-browser-actions"><button onClick={() => { setCreateKind("file"); setCreateName("section.tex"); }} aria-label="New LaTeX file"><FilePlus2 size={14} /></button><button onClick={() => { setCreateKind("folder"); setCreateName("figures"); }} aria-label="New folder"><FolderPlus size={14} /></button></div>}</div><label className="paper-main-document">Main document<select value={mainPath} disabled={!activeProject} onChange={(event) => { setMainPath(event.target.value); void openFile(event.target.value); }}>{!activeProject && <option value="">Choose a project first</option>}{mainChoices.map((project) => <option key={project.path} value={project.path}>{project.path}</option>)}</select></label><div className="paper-tree-scroll">{activeProject ? tree.entries.map((entry) => <TreeNode key={entry.path} entry={entry} depth={0} selected={file?.path || ""} activeDirectory={activeDirectory} expanded={expanded} loading={loading} onToggle={toggleDirectory} onLoad={(path) => void loadDirectory(path)} onOpen={(path) => void openFile(path)} />) : <StateView compact className="paper-project-placeholder" icon={<FolderOpen size={20} />} title={t("No project selected")} description={t("Choose an existing manuscript or start a new one.")} />}</div><div className="paper-pane-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file browser" title="Drag to resize · double-click to reset" aria-valuemin={BROWSER_MIN_WIDTH} aria-valuemax={BROWSER_MAX_WIDTH} aria-valuenow={Math.round(browserWidth)} tabIndex={0} onPointerDown={(event) => beginPaneResize("browser", event)} onPointerMove={movePaneResize} onPointerUp={endPaneResize} onPointerCancel={endPaneResize} onDoubleClick={() => setBrowserWidth(BROWSER_DEFAULT_WIDTH)} onKeyDown={(event) => handlePaneResizeKey("browser", event)} /></aside>
-      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button><span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
+      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button>{projectId && file && ext(file.path) === "tex" && <button className="paper-pane-action" onClick={openCitations} disabled={owner.fileOperationBusy} title={t("Insert citation")}>{t("Insert citation")}</button>}<span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
         {searchOpen && file && <div className="latex-source-search" id={searchId} role="search" aria-label={t("Search source")}>
           <Search size={14} aria-hidden="true" />
           <input ref={searchInputRef} type="text" value={searchQuery} onChange={(event) => changeSearch(event.target.value)} onKeyDown={(event) => {

@@ -15,10 +15,14 @@ before(async () => {
   const { transformWithOxc } = await import("vite");
   const helpers = await import("../src/paper-writing-state.ts");
   const search = await import("../src/paper-source-search.ts");
+  const bibliography = await import("../src/bibliography.ts");
+  const citationSource = fs.readFileSync(path.join(__dirname, "../src/paper-writing-citations.ts"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export function/g, "function");
+  const citationCode = (await transformWithOxc(citationSource, "paper-writing-citations.ts")).code;
+  const citations = new Function(...Object.keys(bibliography), `${citationCode.replace(/^export \{\};?$/gm, "")}\nreturn { citationKeyFor, prepareManuscriptCitation, manuscriptBibliographyPaths };`)(...Object.values(bibliography));
   const source = fs.readFileSync(path.join(__dirname, "../src/PaperWritingView.tsx"), "utf8");
   const icons = require("lucide-react");
   const names = source.match(/\{([^}]+)\} from "lucide-react"/)[1].split(",").map(name => name.trim());
-  const scope = { React, ...React, ...helpers, ...search,
+  const scope = { React, ...React, ...helpers, ...search, ...citations, BookOpen: icons.BookOpen,
     ...Object.fromEntries(names.map(name => [name, icons[name]])),
     useUISettings: () => ({ t: value => value }),
     Dialog: props => props.open ? React.createElement("div", { role: "dialog" }, props.children) : null,
@@ -29,6 +33,9 @@ before(async () => {
   const tabsSource = fs.readFileSync(path.join(__dirname, "../src/Tabs.tsx"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export /g, "");
   const tabs = await transformWithOxc(tabsSource, "Tabs.tsx", { jsx: { runtime: "classic" } });
   Object.assign(scope, new Function(...Object.keys(scope), `${tabs.code}\nreturn { Tabs, Tab };`)(...Object.values(scope)));
+  const citationView = fs.readFileSync(path.join(__dirname, "../src/PaperWritingCitations.tsx"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^import "[^\"]+";\r?\n/gm, "").replace(/^export default /gm, "").replace(/^export /gm, "");
+  const citationViewCode = (await transformWithOxc(citationView, "PaperWritingCitations.tsx", { jsx: { runtime: "classic" } })).code;
+  scope.PaperWritingCitations = new Function(...Object.keys(scope), `${citationViewCode.replace(/^export \{\};?$/gm, "")}\nreturn PaperWritingCitations;`)(...Object.values(scope));
   const text = source.replace(/^import[\s\S]*?from\s+"[^"]+";\r?\n/gm, "").replace(/^import "[^"]+";\r?\n/gm, "").replace("export default function", "function");
   const { code } = await transformWithOxc(text, "PaperWritingView.tsx", { jsx: { runtime: "classic" } });
   Writing = new Function(...Object.keys(scope), `${code.replace(/^export \{\};?$/gm, "")}\nreturn PaperWritingView;`)(...Object.values(scope));
@@ -68,6 +75,7 @@ async function fixture(t, overrides = {}) {
       compiles.push({ root, name, requestId });
       return overrides.compile ? overrides.compile(root, name, requestId) : { ok: true, diagnostics: [], log: "fake build", duration_ms: 1 };
     },
+    ...overrides.bridge,
     onLatexCompileProgress: callback => { progress = callback; return () => { progress = undefined; }; },
   };
   let reactRoot = createRoot(document.getElementById("root"));
@@ -332,4 +340,53 @@ test("projects sharing one execution folder restore their own manuscript selecti
   await f.render(f.a, null);
   assert.equal(document.querySelector('.paper-main-document select').value, "paper/main.tex");
   assert.equal(document.querySelector('.latex-editor-textarea').value, source("A edit remains owned by the original file"));
+});
+
+async function clickText(label) {
+  const button = [...document.querySelectorAll("button")].find(node => node.textContent.trim() === label);
+  assert.ok(button, label); assert.equal(button.disabled, false, label);
+  await React.act(async () => button.click());
+}
+async function changeInput(node, value) {
+  assert.ok(node);
+  await React.act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value);
+    node.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+}
+
+test("Writing inserts a project-library citation and explicitly refreshes its bibliography without replacing manual content", async t => {
+  let db;
+  const options = { bridge: {
+    listLibraries: async id => db.listLibraries(id), listLibraryPapers: async id => db.listPapers(id), setPaperBibliography: async (...args) => db.setPaperBibliography(...args),
+  } };
+  const f = await fixture(t, options);
+  db = require("./store.cjs"); db.openWorkspace(f.a);
+  const idle = fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-citation-idle-"));
+  t.after(() => { db.openWorkspace(idle); fs.rmSync(idle, { recursive: true, force: true }); });
+  const project = db.createResearchProject({ name: "Citation manuscript", workspacePath: f.a }); options.projectId = project.id;
+  const library = db.listLibraries(project.id)[0], paper = db.addPaper(library.id, require("./test-support/bibliography-fixture.cjs").paper);
+  db.addPaper(library.id, { title: "A different default reference", authors: ["Other Author"], year: 2028, doi: "10.5555/unrelated-default" });
+  const citekey = `paper_${paper.id.replace(/[^a-z0-9]/gi, "")}`;
+  const manual = "% Keep this manuscript annotation\n@book{manual, title={Existing hand-written reference}, note={My note}}\n";
+  fs.writeFileSync(path.join(f.a, "paper/references.bib"), manual);
+  await f.render(f.a); await autoCompileOff();
+  const editor = document.querySelector('.latex-editor-textarea'); editor.setSelectionRange(editor.value.indexOf("\\end{document}"), editor.value.indexOf("\\end{document}"));
+  await click("Insert citation");
+  const chooseReference = async (title = "Evidence handoff fixture") => {
+    await changeInput(document.querySelector('[aria-label="Search project references"]'), title);
+    const insert = [...document.querySelectorAll("button")].find(button => button.textContent === "Insert citation and update .bib");
+    assert.equal(insert.disabled, true, "a filtered-out default reference cannot be inserted");
+    await React.act(async () => document.querySelector(".paper-citation-result").click());
+  };
+  await chooseReference(); await clickText("Insert citation and update .bib");
+  assert.ok(f.disk(f.a).includes(`\\cite{${citekey}}`));
+  assert.equal(db.getPaperBibliography(paper.id).citekey, "", "inserting uses the stable fallback without changing the library key");
+  const first = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8"); assert.ok(first.startsWith(manual)); assert.match(first, /Evidence handoff fixture/);
+  db.repairLibraryPaperMetadata(paper.id, { title: "Corrected source metadata" });
+  await click("Close citations");
+  await click("Insert citation"); await chooseReference("Corrected source metadata"); await clickText("Update .bib only");
+  const updated = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8");
+  assert.ok(updated.startsWith(manual)); assert.match(updated, /Corrected source metadata/); assert.equal((updated.match(/@article\{/g) || []).length, 1);
+  assert.equal(f.disk(f.a).split(`\\cite{${citekey}}`).length - 1, 1, "metadata updates do not insert another citation");
 });

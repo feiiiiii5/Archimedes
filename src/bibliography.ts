@@ -43,7 +43,7 @@ function splitAuthors(value: string) {
 
 // Small BibTeX interchange parser: balanced braced/quoted values and literals.
 // Macro expressions are reported instead of silently importing a wrong title.
-export function parseBibliography(input: string): { entries: BibliographyEntry[]; warnings: string[] } {
+export function parseBibliography(input: string, { requireTitle = true } = {}): { entries: BibliographyEntry[]; warnings: string[] } {
   input = input.replace(/^\s*%.*$/gm, "");
   const entries: BibliographyEntry[] = [], warnings: string[] = [];
   let cursor = 0;
@@ -107,14 +107,14 @@ export function parseBibliography(input: string): { entries: BibliographyEntry[]
         record[name[0].toLowerCase()] = name[0].toLowerCase() === "author" ? value : plain(value);
       }
       if (!closed) throw new Error("Unclosed BibTeX entry");
-      if (!record.title) throw new Error("Missing title");
+      if (requireTitle && !record.title) throw new Error("Missing title");
       const normalizedDoi = doi(record.doi || "");
       const eprintIsArxiv = (!record.archiveprefix || /^arxiv$/i.test(record.archiveprefix)) && arxivId(record.eprint || "");
       const normalizedArxiv = eprintIsArxiv ? arxiv(record.eprint) : arxivUrl(record.url || "") && arxivId(record.url) ? arxiv(record.url) : "";
       const externalId = normalizedDoi ? `doi:${normalizedDoi}` : normalizedArxiv ? `arxiv:${normalizedArxiv}` : `bibtex:${key[0]}`;
       entries.push({ citekey: key[0], entryType: kind[0].toLowerCase(), paper: {
         external_id: externalId, s2_id: "", arxiv_id: normalizedArxiv, doi: normalizedDoi,
-        title: record.title, authors: splitAuthors(record.author || ""),
+        title: record.title || "", authors: splitAuthors(record.author || ""),
         year: /^\d{4}$/.test(record.year || "") ? Number(record.year) : null, venue: record.journal || record.booktitle || record.publisher || "",
         abstract: record.abstract || "", url: record.url || (normalizedDoi ? `https://doi.org/${normalizedDoi}` : normalizedArxiv ? `https://arxiv.org/abs/${normalizedArxiv}` : ""),
         pdf_url: "", citation_count: 0, source: "bibtex",

@@ -12,6 +12,7 @@ import { settings as settingsStrings } from "./i18n/translations/settings";
 import { runtime as runtimeStrings } from "./i18n/translations/runtime";
 import { collab as collabStrings } from "./i18n/translations/collab";
 import { reproduce as reproduceStrings } from "./i18n/translations/reproduce";
+import { writingCitations as writingCitationsStrings } from "./i18n/translations/writingCitations";
 import { writing as writingStrings } from "./i18n/translations/writing";
 import { misc as miscStrings } from "./i18n/translations/misc";
 import { native as nativeStrings } from "./i18n/translations/native";
@@ -65,6 +66,7 @@ const translations: Record<string, string> = {
   ...collabStrings,
   ...reproduceStrings,
   ...writingStrings,
+  ...writingCitationsStrings,
   ...miscStrings,
   ...nativeStrings,
   ...newsStrings,
