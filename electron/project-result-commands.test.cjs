@@ -113,3 +113,35 @@ test("complete accepted CSV sources above the old read cap remain available to w
   assert.equal(require("./workspace-files.cjs").readWorkspaceFile(f.execution, source.path).content, content);
   assert.match(require("./agent/workspace-tools.cjs").readLines(f.execution, source.path, 3, 3).content, /last,3/);
 });
+
+test("a delayed summary discussion links its original result after the window changes data stores", async t => {
+  const f = fixture(t), savedA = await f.bridge.saveProjectResult(f.input);
+  f.select(f.other.workspace);
+  const projectB = f.other.defaultResearchProject(), workspaceB = f.other.defaultProjectWorkspace(projectB.id);
+  const savedB = await f.bridge.saveProjectResult({ ...f.input, projectId: projectB.id, workspaceId: workspaceB.id });
+  const beforeB = JSON.stringify(f.other.getProjectResultRecord(savedB.id));
+  f.select(f.data);
+  let release, reached;
+  const delayed = new Promise(resolve => { release = resolve; }), creating = new Promise(resolve => { reached = resolve; });
+  const create = f.bridge.createResearchThread;
+  f.bridge.createResearchThread = async input => { const thread = await create(input); reached(); await delayed; return thread; };
+  const helpers = await import("../src/task-selection.ts");
+  const selected = { dataRoot: f.data, projectId: f.project.id, workspaceId: f.workspace.id, executionRoot: f.execution, threadId: null };
+  const queued = [];
+  const scope = { ...helpers, desktopBridge: f.bridge, taskSelectionRef: { current: selected }, dataFolderLoadingRef: { current: false }, workspaces: [f.workspace], analysisSessionsRef: { current: new Map() }, analysisHandoffsRef: { current: new Map() }, t: value => value, queueComposerText: (key, text) => queued.push({ key, text }), setThreads() {}, threadOpenRequestRef: { current: 0 }, displayThread: () => assert.fail("late A completion must not replace the B view"), setMainSection() {} };
+  const app = fs.readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8"), start = app.indexOf("  async function continueAnalysisInChat("), end = app.indexOf("\n  function sendNoteToChat(", start);
+  const { transformWithOxc } = await import("vite");
+  const { code } = await transformWithOxc(app.slice(start, end), "actual-analysis-owner.tsx");
+  const continueAnalysis = new Function("scope", `with(scope) { ${code}; return continueAnalysisInChat; }`)(scope);
+  const handoff = continueAnalysis("Discuss A summary", { id: "input-a", name: "A.csv", resultId: savedA.id, attachSource: false }, selected, () => false);
+  await creating;
+  f.select(f.other.workspace);
+  scope.taskSelectionRef.current = { dataRoot: f.other.workspace, projectId: projectB.id, workspaceId: workspaceB.id, executionRoot: workspaceB.root, threadId: null };
+  release(); const threadId = await handoff;
+  await f.bridge.linkProjectResultThread(savedA.id, threadId, f.data);
+  assert.equal(f.owner.getProjectResultRecord(savedA.id).threadId, threadId);
+  assert.equal(f.owner.getResearchThread(threadId).based_on_result_id, savedA.id);
+  assert.equal(JSON.stringify(f.other.getProjectResultRecord(savedB.id)), beforeB);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].key, helpers.taskDraftKey({ ...selected, threadId }));
+});

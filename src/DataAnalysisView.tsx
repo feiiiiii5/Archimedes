@@ -204,7 +204,7 @@ export default function DataAnalysisView({ ownerKey = "preview", owner, bridge, 
       const threadId = await onAskAI(`${question.trim()}\n\nDataset context (${scope}):\n${JSON.stringify(context, null, 2)}\n\nTreat sample observations as illustrative. Descriptive statistics and the plot correlation above were computed from all valid local rows; do not claim to have inspected the full dataset.`, { id: inputId, name, threadId: state.threadId, ...(saved || state.resultId ? { resultId: saved?.id ?? state.resultId! } : {}), ...(saved && source ? { sourcePath: source.path, attachSource: true } : {}) }, () => activeInputRef.current.ownerKey === ownerKey && activeInputRef.current.inputId === inputId);
       if (typeof threadId === "string") {
         setOwnerStates((current) => { const previous = current[ownerKey] ?? emptyState; return previous.inputId === inputId ? { ...current, [ownerKey]: { ...previous, threadId } } : current; });
-        if (bridge && (saved || state.resultId)) await bridge.linkProjectResultThread(saved?.id ?? state.resultId!, threadId);
+        if (bridge && (saved || state.resultId)) await bridge.linkProjectResultThread(saved?.id ?? state.resultId!, threadId, owner?.dataRoot);
       }
     }
     catch (reason) { setError(`${t("Could not continue the analysis in chat.")} ${String(reason)}`); }
