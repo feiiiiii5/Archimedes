@@ -275,7 +275,7 @@ interface ResearchDeskBridge {
     listPaperReviewPapers: (input?: { workspace?: string; projectId?: string }) => Promise<PaperReviewPaperSummary[]>;
     choosePaperReviewPdf: () => Promise<string>;
     stagePaperToSlidesPdf: (workspace: string, path: string) => Promise<string>;
-    createPaperReviewRun: (input: PaperReviewCreateInput) => Promise<{ runId: string; document: PaperReviewDocumentSummary | null; venue: { id: string; displayName: string; version: string }; model: string }>;
+    createPaperReviewRun: (input: PaperReviewCreateInput) => Promise<{ runId: string; document: PaperReviewDocumentSummary | null; venue: { id: string; displayName: string; version: string }; model: string; manuscript?: import("./manuscript-handoff").ManuscriptOrigin | null }>;
     getPaperReviewRun: (runId: string) => Promise<PaperReviewRunSummary | null>;
     listPaperReviewRuns: (input?: { projectId?: string; limit?: number }) => Promise<PaperReviewRunSummary[]>;
     cancelPaperReviewRun: (runId: string) => Promise<{ cancelled: boolean }>;
@@ -531,6 +531,7 @@ type PaperReviewSource =
   | { kind: "pdf"; filePath: string };
 
 interface PaperReviewCreateInput {
+  manuscript?: import("./manuscript-handoff").ManuscriptOrigin;
   source: PaperReviewSource;
   venueId?: string;
   workspace?: string;
@@ -661,6 +662,8 @@ interface PaperReviewResult {
 }
 
 interface PaperReviewRunSummary {
+  ownerDataRoot?: string;
+  manuscript?: import("./manuscript-handoff").ManuscriptOrigin | null;
   id: string;
   documentId: string;
   projectId: string;

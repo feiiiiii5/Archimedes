@@ -900,16 +900,26 @@ app.whenReady().then(async () => {
     const sender = event.sender;
     return paperReview.createRun(input, {
       workspace: resolvedWorkspace,
+      dataStore: store.currentStore(),
       emit: (payload) => {
         if (!sender.isDestroyed()) sender.send("paper-review-app:progress", payload);
       },
     });
   });
-  ipcMain.handle("paper-review-app:get-run", (_event, input = {}) => paperReview.getRun(String(input?.runId || "")));
-  ipcMain.handle("paper-review-app:list-runs", (_event, input = {}) => paperReview.listRuns({ projectId: String(input?.projectId || ""), limit: Number(input?.limit) || 50 }));
-  ipcMain.handle("paper-review-app:cancel-run", (_event, input = {}) => paperReview.cancelRun(String(input?.runId || "")));
-  ipcMain.handle("paper-review-app:delete-run", (_event, input = {}) => paperReview.deleteRun(String(input?.runId || "")));
+  const reviewVisible = (run, role = "viewer") => Boolean(run && (!run.ownerDataRoot || run.ownerDataRoot === store.currentStore().workspace)
+    && (!run.projectId || store.canAccessProject(run.projectId, role)));
+  const requireReview = (runId, role = "viewer") => {
+    const run = paperReview.getRun(runId);
+    if (!reviewVisible(run, role)) throw new Error("This review is not available in the current project workspace.");
+    return run;
+  };
+  ipcMain.handle("paper-review-app:get-run", (_event, input = {}) => requireReview(String(input?.runId || "")));
+  ipcMain.handle("paper-review-app:list-runs", (_event, input = {}) => paperReview.listRuns({ projectId: String(input?.projectId || ""), limit: Number(input?.limit) || 50,
+    ownerDataRoot: store.currentStore().workspace }).filter(run => reviewVisible(run)));
+  ipcMain.handle("paper-review-app:cancel-run", (_event, input = {}) => { requireReview(String(input?.runId || ""), "editor"); return paperReview.cancelRun(String(input?.runId || "")); });
+  ipcMain.handle("paper-review-app:delete-run", (_event, input = {}) => { requireReview(String(input?.runId || ""), "editor"); return paperReview.deleteRun(String(input?.runId || "")); });
   ipcMain.handle("paper-review-app:export-run", async (event, input = {}) => {
+    requireReview(String(input?.runId || ""));
     const exported = paperReview.exportRun(String(input?.runId || ""));
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
     const options = {
