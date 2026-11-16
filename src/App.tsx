@@ -73,6 +73,7 @@ import packageMetadata from "../package.json";
 import AuthModal from "./AuthModal";
 import { useUISettings } from "./i18n";
 import { moveSidebarOrder, orderSidebarIds, readSidebarOrder, reconcileSidebarOrder, writeSidebarOrder, type SidebarOrderGroup } from "./sidebar-order";
+import type { ManuscriptChatSource, ManuscriptOpenRequest, ManuscriptOrigin, ManuscriptSource, ManuscriptTarget } from "./manuscript-handoff";
 import { type PaperOpenRequest } from "./PaperWritingView";
 import { createFileDraft, formatFileComment, isDraftDirty, isEditableFile, markDraftSaved, mergeRefreshedFiles, prepareFileContent, toEditorText, type FileComment, type FileDraft, type FileSelection } from "./file-editor";
 import { shortcutMatches } from "./file-text-size";
@@ -1519,6 +1520,8 @@ function App() {
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState("");
   const [paperOpenRequest, setPaperOpenRequest] = useState<PaperOpenRequest>(null);
+  const [manuscriptRequests, setManuscriptRequests] = useState<Partial<Record<ManuscriptTarget, ManuscriptOpenRequest>>>({});
+  const manuscriptChatsRef = useRef(new Map<string, Promise<ResearchThreadDetail>>());
   const [changeSets, setChangeSets] = useState<WorkspaceChangeSet[]>([]);
   const [papers, setPapers] = useState(initialPapers);
   const [modal, setModal] = useState<Modal>(null);
@@ -3054,12 +3057,77 @@ function App() {
     }
   }
 
-  function askAIAboutPaper(filePath: string) {
-    const absolutePath = `${executionWorkspace.replace(/[\\/]$/, "")}/${filePath.replace(/^\/+/, "")}`;
-    const attachment: ContextAttachment = { id: `file:${absolutePath}`, type: "file", name: filePath.split("/").at(-1) || filePath, path: absolutePath, detail: `LaTeX paper source · ${filePath}` };
-    setContextItems((current) => current.some((item) => item.id === attachment.id) ? current : [...current, attachment].slice(0, 12));
-    setResearchMode("paper-generation");
-    setMainSection("chat");
+  async function openManuscriptChat(source: ManuscriptChatSource, text = "", kind: "discussion" | "revision" = "discussion") {
+    if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== source.dataRoot) throw new Error(t("Return to the manuscript data folder before continuing."));
+    const originKey = taskDraftKey(taskSelectionRef.current);
+    const cacheKey = `archimedes-manuscript-chat:${JSON.stringify([source.dataRoot, source.projectId, source.workspaceId, source.workspace, source.mainPath, kind])}`;
+    let pending = manuscriptChatsRef.current.get(cacheKey);
+    if (!pending) {
+      pending = (async () => {
+        let stored: string | null = null;
+        try { stored = window.localStorage.getItem(cacheKey); } catch { /* Session persistence is optional. */ }
+        if (stored) {
+          try { return await desktopBridge.getResearchThread(stored, source.dataRoot); }
+          catch (reason) { if (!/not found|no longer exists/i.test(String(reason))) throw reason; }
+        }
+        if (taskSelectionRef.current.dataRoot !== source.dataRoot || dataFolderLoadingRef.current) throw new Error(t("Return to the manuscript data folder before continuing."));
+        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: source.threadId || undefined, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
+      })();
+      manuscriptChatsRef.current.set(cacheKey, pending);
+    }
+    let thread: ResearchThreadDetail;
+    try { thread = await pending; }
+    finally { if (manuscriptChatsRef.current.get(cacheKey) === pending) manuscriptChatsRef.current.delete(cacheKey); }
+    const target = threadTaskSelection(source.dataRoot, thread, workspaces);
+    if (target.projectId !== source.projectId || target.workspaceId !== source.workspaceId || target.executionRoot !== source.workspace) throw new Error(t("The manuscript session does not match its source workspace."));
+    try { window.localStorage.setItem(cacheKey, thread.id); } catch { /* The in-memory task still works. */ }
+    if (text.trim()) queueComposerText(taskDraftKey(target), text);
+    const filePath = source.selectedPath || source.mainPath;
+    const attachment: ContextAttachment = { id: `file:${source.workspace}/${filePath}`, type: "file", name: filePath.split("/").at(-1) || filePath, path: `${source.workspace.replace(/[\\/]$/, "")}/${filePath}`, detail: `LaTeX manuscript source · ${filePath}` };
+    setContextItems((current) => current.some((item) => item.id === attachment.id) ? current : [...current, attachment].slice(0, 12), taskDraftKey(target));
+    if (!dataFolderLoadingRef.current && taskSelectionRef.current.dataRoot === source.dataRoot) setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
+    if (!dataFolderLoadingRef.current && taskDraftKey(taskSelectionRef.current) === originKey && taskSelectionRef.current.dataRoot === source.dataRoot) {
+      threadOpenRequestRef.current += 1; displayThread(thread, source.dataRoot); setMainSection("chat");
+    }
+  }
+
+  async function askAIAboutPaper(filePath: string, manuscript?: { workspace: string; projectId: string | null; mainPath: string; selectedPath: string }) {
+    const selection = taskSelectionRef.current;
+    if (!selection.projectId || !selection.workspaceId || manuscript && (manuscript.projectId !== selection.projectId || manuscript.workspace !== selection.executionRoot)) throw new Error(t("Select the manuscript project before continuing."));
+    await openManuscriptChat({ dataRoot: selection.dataRoot, projectId: selection.projectId, workspaceId: selection.workspaceId, threadId: selection.threadId, workspace: manuscript?.workspace || selection.executionRoot, mainPath: manuscript?.mainPath || filePath, selectedPath: filePath });
+  }
+
+  async function prepareManuscriptHandoff(target: ManuscriptTarget, source: ManuscriptSource) {
+    const selection = taskSelectionRef.current;
+    if (dataFolderLoadingRef.current || !selection.workspaceId || selection.projectId !== source.projectId || selection.executionRoot !== source.workspace) throw new Error(t("Return to the source manuscript project before handing it off."));
+    const origin: ManuscriptOrigin = { ...source, dataRoot: selection.dataRoot, workspaceId: selection.workspaceId, threadId: selection.threadId };
+    const ownerKey = taskDraftKey(selection);
+    setManuscriptRequests((current) => ({ ...current, [target]: { origin, token: crypto.randomUUID() } }));
+    if (hiddenCoreModules.has(target)) await setCoreModuleEnabled(target, true);
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== ownerKey) throw new Error(t("Return to the source manuscript project before handing it off."));
+    setMainSection(target);
+  }
+
+  async function returnToManuscript(origin: ManuscriptOrigin) {
+    if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== origin.dataRoot) throw new Error(t("Return to the manuscript data folder before continuing."));
+    const ownerKey = taskDraftKey(taskSelectionRef.current);
+    let target: TaskSelection;
+    let thread: ResearchThreadDetail | null = null;
+    if (origin.threadId) {
+      thread = await desktopBridge.getResearchThread(origin.threadId, origin.dataRoot);
+      target = threadTaskSelection(origin.dataRoot, thread, workspaces);
+    } else target = newTaskSelection(origin.dataRoot, projects.find((project) => project.id === origin.projectId) || null, workspaces, origin.workspaceId);
+    if (target.projectId !== origin.projectId || target.executionRoot !== origin.workspace) throw new Error(t("The source manuscript folder is no longer connected to this task."));
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== ownerKey) return;
+    if (thread) { threadOpenRequestRef.current += 1; displayThread(thread, origin.dataRoot); } else applyTaskSelection(target);
+    setPaperOpenRequest({ path: origin.selectedPath || origin.mainPath, token: Date.now() }); setMainSection("writing");
+  }
+
+  async function draftManuscriptRevision(run: PaperReviewRunSummary, findings: PaperReviewFinding[]) {
+    if (!run.manuscript || !findings.length) throw new Error(t("This review has no recorded manuscript source."));
+    const origin = run.manuscript;
+    const text = ["Plan a manuscript revision using this selected simulated-review feedback. Preserve the current manuscript until I approve specific edits.", `Reviewed manuscript: ${origin.mainPath}`, `Reviewed source version: ${origin.sourceVersion}`, `Reviewed PDF SHA256: ${origin.pdfSha256}`, `Review run: ${run.id}`, `Source snapshot: ${origin.manifestPath}`, "Compare the current sources with the reviewed version before proposing changes.", ...findings.map((finding, index) => `${index + 1}. ${finding.text}${finding.page ? `\nPDF page: ${finding.page}` : ""}${finding.quote ? `\nEvidence quote: ${finding.quote}` : ""}${finding.severity ? `\nSeverity: ${finding.severity}` : ""}`)].join("\n\n");
+    await openManuscriptChat(origin, text, "revision");
   }
 
   function selectOpenFilePane(file: WorkspaceFilePreview, surface: "workbench" | "page" = "workbench") {
@@ -3443,7 +3511,7 @@ function App() {
     daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
     news: <NewsView chatTargetLabel={activeThread?.title || t("New conversation")} bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
-    "paper-review": <PaperReviewView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} active={mainSection === "paper-review"} />,
+    "paper-review": <PaperReviewView bridge={desktopBridge} workspace={executionWorkspace} dataRoot={workspace} projectId={activeProjectId} active={mainSection === "paper-review"} manuscriptRequest={manuscriptRequests["paper-review"]} onReturnToManuscript={returnToManuscript} onDraftRevision={draftManuscriptRevision} />,
     extensions: <ExtensionsView bridge={desktopBridge} workspace={executionWorkspace} tab={extensionsTab} onTabChange={setExtensionsTab} attachedIds={new Set(contextItems.map((item) => item.id))} onAttach={(item) => setContextItems((current) => current.some((candidate) => candidate.id === item.id) ? current : [...current, item].slice(0, 12))} />,
     reproduce: <ReproduceView bridge={desktopBridge} selectedId={reproduceId} onSelect={setReproduceId} />,
     "image-creation": <ImageCreationView active={mainSection === "image-creation"} onBrowseProceedings={() => { setDailyStartMode("conference"); setMainSection("daily"); }} />,
@@ -3456,7 +3524,7 @@ function App() {
       await submitPrompt(prompt, "free-chat", reasoningEffort, contextLength, [], "paper-to-slides", backend, true, mineruToken || undefined);
     }} />,
 
-    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} active={mainSection === "writing"} />,
+    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} onHandoff={prepareManuscriptHandoff} active={mainSection === "writing"} />,
   };
   for (const entry of pluginEntries) {
     sidebarModuleContent[entry.id] = <PluginModuleView key={entry.id} entry={entry} />;

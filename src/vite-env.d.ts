@@ -102,7 +102,7 @@ interface ResearchDeskBridge {
     readManuscriptSnapshot?: (workspace: string, manifestPath: string) => Promise<import("./manuscript-snapshot").ManuscriptBuildVerification>;
     getResearchTurnImage: (threadId: string, turnId: string, position: number, workspace?: string) => Promise<string | null>;
     getResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
-    createResearchThread: (input: { projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
+    createResearchThread: (input: { basedOnThreadId?: string; projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
     forkResearchThread: (threadId: string, workspace?: string, side?: boolean) => Promise<ResearchThreadDetail>;
     undoResearchTurn: (threadId: string, workspace?: string) => Promise<{ thread: ResearchThreadDetail; prompt: string; backupThreadId: string }>;
     compactResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
@@ -1726,6 +1726,7 @@ interface ResearchComment {
 }
 
 interface ResearchThread {
+  based_on_thread_id?: string | null;
   id: string;
   kind?: "research" | "paper";
   harness?: "api" | "codex" | "claude" | "opencode" | null;

@@ -49,7 +49,7 @@ test('a clicked directory link expands nested Files entries and can still open a
   const names = ['React','useState','useEffect','useRef','useCallback','useUISettings','WorkspaceFileGlyph','workspaceFileTone','FilePreview','FolderOpen','RefreshCw','Plus','ChevronDown','ChevronRight','ChevronLeft','ChevronsLeft','ChevronsRight','Maximize2','Minimize2','X','MenuSurface','MenuItem','MenuDivider'];
   const values = [React,React.useState,React.useEffect,React.useRef,React.useCallback,() => ({ t: value => value }),icon,() => 'file',FilePreview,...Array(names.length - 9).fill(icon)];
   const { FilesView, setDirectoryChildren, ensureDirectoryPath } = new Function(...names, 'workspacePathName', `${code}\nreturn { FilesView, setDirectoryChildren, ensureDirectoryPath };`)(...values, workspacePathName);
-  const { code: openerCode } = await transformWithOxc(section(app, '  async function openChangedFile(', '\n  function askAIAboutPaper('), 'path-opener.tsx');
+  const { code: openerCode } = await transformWithOxc(section(app, '  async function openChangedFile(', '\n  async function openManuscriptChat('), 'path-opener.tsx');
   const openerFactory = new Function('pathOpenRequestRef','executionWorkspace','executionWorkspaceRef','desktopBridge','setFileTree','setFileError','setDirectoryRequest','openWorkbench','setPaperOpenRequest','setMainSection','openFilePane','setSelectedFilePath','setSelectedFile','setFileLoading','setDirectoryChildren','ensureDirectoryPath', `${openerCode}\nreturn openChangedFile;`);
   const noOp = () => {};
   const fileReads = [];
@@ -118,7 +118,7 @@ test('a clicked directory link expands nested Files entries and can still open a
 test('newer path requests win over slower directory inspection', async () => {
   const app = fs.readFileSync(path.join(__dirname, '../src/App.tsx'), 'utf8');
   const { transformWithOxc } = await import('vite');
-  const { code } = await transformWithOxc(section(app, '  async function openChangedFile(', '\n  function askAIAboutPaper('), 'path-opener-race.tsx');
+  const { code } = await transformWithOxc(section(app, '  async function openChangedFile(', '\n  async function openManuscriptChat('), 'path-opener-race.tsx');
   const openerFactory = new Function('pathOpenRequestRef','executionWorkspace','executionWorkspaceRef','desktopBridge','setFileTree','setFileError','setDirectoryRequest','openWorkbench','setPaperOpenRequest','setMainSection','openFilePane','setSelectedFilePath','setSelectedFile','setFileLoading','setDirectoryChildren','ensureDirectoryPath', `${code}\nreturn openChangedFile;`);
   const request = { current: 0 }, workspace = { current: '/workspace' }, actions = [];
   let release;

@@ -379,5 +379,3 @@ test("a late snapshot check cannot hand off a newer unsaved editing version as i
   assert.equal(handoffs.length, 0); assert.match(document.body.textContent, /changed while preparing the handoff/);
   assert.match(document.querySelector(".latex-editor-textarea").value, /Typed during PDF verification/);
 });
-
-

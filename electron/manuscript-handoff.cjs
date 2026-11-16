@@ -1,5 +1,5 @@
 const path = require("node:path");
-const { workspacePath: canonicalWorkspace } = require("./workspace-files.cjs");
+const { canonicalWorkspace } = require("./workspace-context.cjs");
 const { readManuscriptSnapshot, pinManuscriptSnapshot, unpinManuscriptSnapshot } = require("./manuscript-snapshot.cjs");
 
 function verifyManuscriptOrigin(store, input) {
