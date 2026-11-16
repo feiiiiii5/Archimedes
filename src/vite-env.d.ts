@@ -274,7 +274,8 @@ interface ResearchDeskBridge {
     listPaperReviewVenues: () => Promise<PaperReviewVenueSummary[]>;
     listPaperReviewPapers: (input?: { workspace?: string; projectId?: string }) => Promise<PaperReviewPaperSummary[]>;
     choosePaperReviewPdf: () => Promise<string>;
-    stagePaperToSlidesPdf: (workspace: string, path: string) => Promise<string>;
+    stagePaperToSlidesPdf: (workspace: string, path: string, options?: { manuscript?: import("./manuscript-handoff").ManuscriptOrigin; threadId: string }) => Promise<string>;
+    checkPaperToSlidesSetup?: (input: { backend: "codex" | "claude"; hasTaskToken: boolean }) => Promise<{ checks: Array<{ id: string; label: string; status: "ready" | "missing" | "optional"; detail: string }>; canStart: boolean }>;
     createPaperReviewRun: (input: PaperReviewCreateInput) => Promise<{ runId: string; document: PaperReviewDocumentSummary | null; venue: { id: string; displayName: string; version: string }; model: string }>;
     getPaperReviewRun: (runId: string) => Promise<PaperReviewRunSummary | null>;
     listPaperReviewRuns: (input?: { projectId?: string; limit?: number }) => Promise<PaperReviewRunSummary[]>;
