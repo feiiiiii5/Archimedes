@@ -42,3 +42,33 @@ test("workbench notes reject empty keys", () => {
   assert.throws(() => notes.saveNote("", "content"), /note key/i);
   assert.throws(() => notes.getNote("   "), /note key/i);
 });
+
+test("owned notes claim legacy content once and keep same-ID folders isolated after reload", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-owned-notes-"));
+  try {
+    notes.initialize(directory);
+    notes.saveNote("same-thread", "Existing thread note");
+    const a = `owner:thread:${JSON.stringify(["/data/a", "same-thread"])}`;
+    const b = `owner:thread:${JSON.stringify(["/data/b", "same-thread"])}`;
+    assert.equal(notes.getNote(a).content, "Existing thread note");
+    assert.equal(notes.getNote(b).content, "");
+    assert.equal(notes.getNote("same-thread").content, "");
+    notes.saveNote(b, "B note");
+    notes.saveNote("draft:/data/a", "Existing unsent note");
+    const newA = `owner:new:${JSON.stringify(["/data/a", "project-a", "workspace-a", "/execution/a"])}`;
+    const newB = `owner:new:${JSON.stringify(["/data/a", "project-b", "workspace-b", "/execution/b"])}`;
+    assert.equal(notes.getNote(newA).content, "Existing unsent note");
+    assert.equal(notes.getNote(newB).content, "");
+    const longRoot = `/research/${"nested/".repeat(40)}`;
+    const longA = `owner:thread:${JSON.stringify([longRoot, "a"])}`, longB = `owner:thread:${JSON.stringify([longRoot, "b"])}`;
+    notes.saveNote(longA, "Long A"); notes.saveNote(longB, "Long B");
+    notes.initialize(directory);
+    assert.equal(notes.getNote(a).content, "Existing thread note");
+    assert.equal(notes.getNote(b).content, "B note");
+    assert.equal(notes.getNote(newA).content, "Existing unsent note");
+    assert.equal(notes.getNote(longA).content, "Long A");
+    assert.equal(notes.getNote(longB).content, "Long B");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
