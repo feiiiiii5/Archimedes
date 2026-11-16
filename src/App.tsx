@@ -2225,7 +2225,7 @@ function App() {
         } else if (event.threadId) setNativeStream((current) => ({ threadId: event.threadId!, events: mergeNativeEvent(current.threadId === event.threadId ? current.events : [], event) }));
       }
       const viewingRun = taskSelectionRef.current.dataRoot === run.selection.dataRoot
-        && (taskDraftKey(taskSelectionRef.current) === run.ownerKey || taskSelectionRef.current.threadId === run.threadId);
+        && (taskDraftKey(taskSelectionRef.current) === run.ownerKey || Boolean(taskSelectionRef.current.threadId && taskSelectionRef.current.threadId === run.threadId));
       if (!viewingRun) return;
       if (event.type === "workspace_change" && event.changeSet) {
         setChangeSets((current) => upsertChangeSet(current, event.changeSet!));
@@ -2902,13 +2902,13 @@ function App() {
     }
   }
 
-  async function runCommand(command: string, actionId?: string) {
+  async function runCommand(command: string, actionId?: string, owner: TaskSelection = taskSelectionRef.current) {
     const trimmedCommand = command.trim();
     if (!trimmedCommand || runningSession) return;
-    const ownerKey = taskDraftKey(taskSelectionRef.current);
-    openWorkbench("terminal");
+    const ownerKey = taskDraftKey(owner);
+    if (taskDraftKey(taskSelectionRef.current) === ownerKey) openWorkbench("terminal");
     try {
-      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: executionWorkspace, actionId });
+      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: owner.executionRoot, actionId });
       runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
@@ -3160,7 +3160,8 @@ function App() {
   async function approvePendingAction() {
     const action = pendingAction;
     if (!action) return;
-    const ownerKey = taskOwnerKey;
+    const owner = taskSelectionRef.current;
+    const ownerKey = taskDraftKey(owner);
     const ownerThreadId = approvalThreadId;
     const clear = () => {
       if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
@@ -3170,8 +3171,8 @@ function App() {
     try {
       if (action.source === "agent") await desktopBridge.approveAgentAction(action.id);
       clear();
-      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id);
-      else if (action.kind === "write" && action.payload.path) await refreshWorkspaceFiles();
+      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id, owner);
+      else if (action.kind === "write" && action.payload.path && taskDraftKey(taskSelectionRef.current) === ownerKey) await refreshWorkspaceFiles();
     } catch (error) {
       if (String(error).includes("file changed while awaiting approval")) clear();
       if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not approve this action.")} ${String(error)}`);
