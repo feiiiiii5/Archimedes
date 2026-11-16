@@ -45,6 +45,8 @@ export const app: Record<string, string> = {
   "Copy": "复制",
   "Copy path": "复制路径",
   "Copy relative path": "复制相对路径",
+  "Could not open the data folder.": "无法打开数据目录。",
+  "Could not open this research chat.": "无法打开此研究对话。",
   "Create": "创作",
   "Customize tabs…": "自定义标签…",
   "Cut": "剪切",

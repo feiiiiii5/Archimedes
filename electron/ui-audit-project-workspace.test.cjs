@@ -41,7 +41,10 @@ test("live running and review states refresh without reopening the data workspac
 });
 
 test("the renderer resolves session → project → primary workspace for tools", () => {
-  assert.match(app, /const executionWorkspace = activeThread\?\.workspace_path \|\| activeWorkspace\?\.root \|\| activeProject\?\.workspace_path \|\| workspace;/);
+  assert.match(app, /const executionWorkspace = taskSelection\.executionRoot;/);
+  const selection = fs.readFileSync(path.join(root, "src/task-selection.ts"), "utf8");
+  assert.match(selection, /executionRoot: thread\.workspace_path \|\| selected!\.root/);
+  assert.match(selection, /selected\?\.root \|\| project\?\.workspace_path \|\| dataRoot/);
   assert.match(app, /runAgent\(\{ prompt: requestPrompt, workspace: executionWorkspace/);
   assert.match(app, /runTerminal\(\{ command: trimmedCommand, cwd: executionWorkspace/);
   assert.match(app, /writeWorkspaceFile\(executionWorkspace/);
