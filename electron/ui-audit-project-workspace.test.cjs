@@ -37,7 +37,7 @@ test("live running and review states refresh without reopening the data workspac
   assert.match(preload, /getResearchSnapshot: \(\) => ipcRenderer\.invoke\("research:snapshot"\)/);
   assert.match(app, /getResearchSnapshot\?\.\(\)/);
   assert.match(app, /pending_actions: \(thread\.pending_actions \?\? 0\) \+ 1/);
-  assert.match(app, /clearThreadPendingAction\(\);/);
+  assert.match(app, /clearThreadPendingAction\(ownerThreadId\);/);
 });
 
 test("the renderer resolves session → project → primary workspace for tools", () => {

@@ -1438,6 +1438,7 @@ function App() {
     return Math.max(240, Math.round(workbenchWidth * pane.size / 100));
   }, [workbenchLayout, workbenchWidth]);
   const [runningSession, setRunningSession] = useState<string | null>(null);
+  const runningCommandOwnerRef = useRef<string | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [chatViewNonce, setChatViewNonce] = useState(0);
@@ -1463,7 +1464,8 @@ function App() {
     : null;
   const [nativeStream, setNativeStream] = useState<{ threadId: string; events: ResearchEvent[] }>({ threadId: "", events: [] });
   const [nativeQuestions, setNativeQuestions] = useState<Array<{ threadId: string; question: NativeAgentQuestion }>>([]);
-  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId]);
+  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId || (agentBusy && runningOwnerKey === taskOwnerKey && nativeStream.threadId === runningThreadId)
+    ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId, agentBusy, runningOwnerKey, taskOwnerKey, runningThreadId]);
   useEffect(() => {
     if (settingsOpen) return;
     let active = true;
@@ -2178,7 +2180,7 @@ function App() {
     const unsubscribe = desktopBridge.onTerminalData(({ sessionId, data }) => {
       if (sessionId === runningSession && (data.includes("[process exited") || data.includes("[process stopped]"))) {
         setRunningSession(null);
-        setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "The approved command finished and its output was recorded in the workspace history." }]);
+        if (runningCommandOwnerRef.current === taskDraftKey(taskSelectionRef.current)) setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "The approved command finished and its output was recorded in the workspace history." }]);
       }
     });
     return unsubscribe;
@@ -2886,6 +2888,7 @@ function App() {
 
   async function interruptResearchTurn() {
     if (!runningThreadId || interrupting) return;
+    const ownerKey = activeRunRef.current?.ownerKey ?? taskOwnerKey;
     setInterrupting(true);
     setEvents((current) => [
       ...current.filter((event) => event.title !== "Cancelling task"),
@@ -2895,19 +2898,21 @@ function App() {
       await desktopBridge.interruptAgent(runningThreadId);
     } catch (error) {
       setInterrupting(false);
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `Archimedes could not interrupt this task: ${String(error)}` }]);
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Archimedes could not interrupt this task.")} ${String(error)}`);
     }
   }
 
   async function runCommand(command: string, actionId?: string) {
     const trimmedCommand = command.trim();
     if (!trimmedCommand || runningSession) return;
+    const ownerKey = taskDraftKey(taskSelectionRef.current);
     openWorkbench("terminal");
     try {
       const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: executionWorkspace, actionId });
+      runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `The command could not start: ${String(error)}` }]);
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("The command could not start.")} ${String(error)}`);
     }
   }
 
@@ -3147,8 +3152,7 @@ function App() {
     await openFilePane(normalizedName);
   }
 
-  function clearThreadPendingAction() {
-    const threadId = activeThreadIdRef.current;
+  function clearThreadPendingAction(threadId = approvalThreadId) {
     if (!threadId) return;
     setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, pending_actions: Math.max(0, (thread.pending_actions ?? 0) - 1) } : thread));
   }
@@ -3156,18 +3160,21 @@ function App() {
   async function approvePendingAction() {
     const action = pendingAction;
     if (!action) return;
+    const ownerKey = taskOwnerKey;
+    const ownerThreadId = approvalThreadId;
+    const clear = () => {
+      if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
+      setPendingAction((current) => current?.id === action.id ? null : current);
+      clearThreadPendingAction(ownerThreadId);
+    };
     try {
       if (action.source === "agent") await desktopBridge.approveAgentAction(action.id);
-      setPendingAction(null);
-      clearThreadPendingAction();
-      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) {
-        await runCommand(action.payload.command, action.id);
-      } else if (action.kind === "write" && action.payload.path) {
-        await refreshWorkspaceFiles();
-      }
+      clear();
+      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id);
+      else if (action.kind === "write" && action.payload.path) await refreshWorkspaceFiles();
     } catch (error) {
-      if (String(error).includes("file changed while awaiting approval")) { setPendingAction(null); clearThreadPendingAction(); }
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `Could not approve this action: ${String(error)}` }]);
+      if (String(error).includes("file changed while awaiting approval")) clear();
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not approve this action.")} ${String(error)}`);
     }
   }
 
@@ -3180,9 +3187,16 @@ function App() {
   async function rejectPendingAction() {
     const action = pendingAction;
     if (!action) return;
-    if (action.source === "agent") await desktopBridge.rejectAgentAction(action.id);
-    setPendingAction(null);
-    clearThreadPendingAction();
+    const ownerKey = taskOwnerKey;
+    const ownerThreadId = approvalThreadId;
+    try {
+      if (action.source === "agent") await desktopBridge.rejectAgentAction(action.id);
+      if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
+      setPendingAction((current) => current?.id === action.id ? null : current);
+      clearThreadPendingAction(ownerThreadId);
+    } catch (error) {
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not reject this action.")} ${String(error)}`);
+    }
   }
 
   function openWelcomeWorkflow(action: ResearchWelcomeAction) {
