@@ -920,6 +920,10 @@ function ensureDefaultProject(db) {
 }
 
 
+function defaultResearchProject() {
+  return getResearchProject(ensureDefaultProject(requireDatabase()));
+}
+
 function requireDatabase() {
   const database = currentState().database;
   if (!database) throw new Error("Open a workspace before accessing its research data.");
@@ -2578,6 +2582,7 @@ function bindResearchThreadHarness(id, harness) {
 }
 
 
+
 function setResearchThreadVisibility(id, visibility) {
   const db = requireDatabase();
   const thread = db.prepare("SELECT id, project_id, owner_id, visibility FROM research_threads WHERE id = ?").get(id);
@@ -2824,12 +2829,35 @@ function applyCloudComment(projectId, comment, { currentCloudUserId = "", localU
   return db.prepare("SELECT * FROM comments WHERE id = ?").get(comment.id);
 }
 
+function hydrateResearchThreadWorkspace(db, thread) {
+  if (thread.workspace_id && thread.workspace_path) return thread;
+  const project = db.prepare("SELECT * FROM research_projects WHERE id = ?").get(thread.project_id);
+  if (!project) return thread;
+  const workspace = (thread.workspace_id
+    ? db.prepare("SELECT * FROM project_workspaces WHERE id = ? AND project_id = ?").get(thread.workspace_id, project.id)
+    : null) || ensureProjectSharedWorkspace(db, project);
+  if (!workspace) return thread;
+  let root = thread.workspace_path || workspace.root;
+  // Keep missing historical folders readable. Execution will require the
+  // actual directory, but opening a conversation must still show its history.
+  if (!thread.workspace_path) {
+    try { root = normalizeWorkspacePath(root); }
+    catch { root = path.resolve(root); }
+  }
+  // This is local execution metadata, not a cloud content edit: viewers can
+  // open imported history, while the run resolver separately requires editor.
+  db.prepare(`UPDATE research_threads SET workspace_id = COALESCE(NULLIF(workspace_id, ''), ?),
+    workspace_path = COALESCE(NULLIF(workspace_path, ''), ?) WHERE id = ?`).run(workspace.id, root, thread.id);
+  return db.prepare("SELECT * FROM research_threads WHERE id = ?").get(thread.id);
+}
+
 function getResearchThread(id) {
   const db = requireDatabase();
-  const thread = db.prepare("SELECT * FROM research_threads WHERE id = ?").get(id);
+  let thread = db.prepare("SELECT * FROM research_threads WHERE id = ?").get(id);
   if (!thread) throw new Error("Research thread not found.");
   if (thread.project_id && !canAccessProject(thread.project_id, "viewer")) throw new Error("You do not have access to this research thread.");
   if (thread.visibility === "private" && thread.owner_id !== localIdentity.userId) throw new Error("This research thread is a private draft.");
+  thread = hydrateResearchThreadWorkspace(db, thread);
   const turns = db.prepare(`
     SELECT id, thread_id, task_id, mode, user_message, assistant_message, status, created_at, completed_at
     FROM research_turns WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC
@@ -3727,6 +3755,7 @@ module.exports = {
   applyCloudComment,
   renameResearchProject,
   setResearchProjectWorkspace,
+  defaultResearchProject,
   createResearchThread,
   deleteLibrary,
   deleteInternalPaperReviewThreads,
