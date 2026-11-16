@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleDot, Cloud, FileCode2, FileImage, FilePlus2, FileText, Folder, FolderOpen, FolderPlus, FolderUp, LoaderCircle, MessageCircle, PanelLeftClose, PanelLeftOpen, Play, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleDot, Cloud, FileCode2, FileImage, FilePlus2, FileText, Folder, FolderOpen, FolderPlus, FolderUp, History, LoaderCircle, MessageCircle, PanelLeftClose, PanelLeftOpen, Play, RefreshCw, Search, X } from "lucide-react";
 import { useUISettings } from "./i18n";
 import SharedNoteEditor from "./SharedNoteEditor";
 import PaperTemplateLibrary, { paperTemplates } from "./PaperTemplateLibrary";
@@ -12,6 +12,8 @@ import { findSourceMatches, sourceMarksByLine, type SourceMark } from "./paper-s
 import { createWritingDocument, createWritingScope, editWritingDocument, saveWritingDocument, readWritingLocation, rememberWritingLocation, type WritingScope } from "./paper-writing-state";
 import "./paper-source-search.css";
 import "./paper-writing-workspace.css";
+import PaperWritingVersions from "./PaperWritingVersions";
+import type { ManuscriptVersionComparison, ManuscriptVersionOwner } from "./paper-writing-history";
 
 
 const EDITABLE = new Set(["tex", "bib", "bst", "cls", "sty", "cfg"]);
@@ -131,8 +133,8 @@ function HighlightLine({ text, problem, marks, activeMatch }: { text: string; pr
 
 export type PaperOpenRequest = { path: string; token: number } | null;
 
-export default function PaperWritingView({ bridge, workspace, projectId, openRequest, onRefresh, onAskAI, active = true }: {
-  bridge: ResearchDeskBridge; workspace: string; projectId?: string | null; openRequest: PaperOpenRequest; onRefresh: () => Promise<void> | void; onAskAI: (path: string) => void; active?: boolean;
+export default function PaperWritingView({ bridge, workspace, projectId, openRequest, onRefresh, onAskAI, dataRoot, workspaceId, threadId, active = true }: {
+  bridge: ResearchDeskBridge; workspace: string; projectId?: string | null; openRequest: PaperOpenRequest; onRefresh: () => Promise<void> | void; onAskAI: (path: string) => void; dataRoot?: string; workspaceId?: string | null; threadId?: string | null; active?: boolean;
 }) {
   const { t } = useUISettings();
   const scopesRef = useRef(new Map<string, WritingScope>());
@@ -201,6 +203,8 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
   const createOpen = Boolean(createKind) && active;
   const [createName, setCreateName] = scoped("createName");
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const [versionOwner, setVersionOwner] = useState<{ owner: WritingScope; context: ManuscriptVersionOwner; initialId?: string } | null>(null);
+  const [versionsBusy, setVersionsBusy] = useState(false);
   const lineNumbersRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -294,6 +298,33 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
     if (request !== owner.activationSequence) return;
     await openFile(path);
   }, [bridge, loadDirectory, openFile, owner, refreshScope]);
+
+  function openVersions(initialId?: string) {
+    if (!projectId || !workspaceId || !owner.mainPath) return;
+    setVersionOwner({ owner, context: { dataRoot, projectId, workspaceId, executionRoot: owner.workspace, mainPath: owner.mainPath, threadId }, initialId });
+  }
+  async function withSavedManuscript<T>(operation: (selection: NonNullable<typeof versionOwner>) => Promise<T>) {
+    const selected = versionOwner;
+    if (!selected || versionsBusy) throw new Error(t("The manuscript is busy. Try again after saving."));
+    const target = selected.owner;
+    if (target.compileState === "compiling") throw new Error(t("Wait for the current compilation before changing key versions."));
+    setVersionsBusy(true);
+    try {
+      await Promise.all([...target.documents.values()].map(document => saveWritingDocument(document, bridge.writeWorkspaceFile, refreshScope)));
+      return await operation(selected);
+    } finally { setVersionsBusy(false); }
+  }
+  async function restoreVersion(comparison: ManuscriptVersionComparison) {
+    await withSavedManuscript(async selected => {
+      if (!bridge.restoreManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
+      const receipt = await bridge.restoreManuscriptVersion({ ...selected.context, id: comparison.version.id, expectedSourceVersion: comparison.currentSourceVersion });
+      const paths = new Set([...receipt.restoredPaths, ...receipt.removedPaths]);
+      for (const name of paths) selected.owner.documents.delete(name);
+      selected.owner.compileSequence++; selected.owner.compileResult = null; selected.owner.compileState = "idle"; selected.owner.compileLog = ""; selected.owner.coedit = false;
+      await openFile(selected.context.mainPath);
+      await onRefresh();
+    });
+  }
 
   const refreshProjects = useCallback(async () => {
     const request = ++owner.projectListSequence;
@@ -624,9 +655,10 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
   } as React.CSSProperties : undefined;
 
   return <div className="paper-writing-page" data-surface="writing">
+    {versionOwner && active && versionOwner.owner === owner && versionOwner.context.projectId === projectId && versionOwner.context.mainPath === mainPath && <PaperWritingVersions key={`${versionOwner.context.projectId}:${versionOwner.context.mainPath}:${versionOwner.initialId || ""}`} initialId={versionOwner.initialId} onClose={() => setVersionOwner(null)} onList={async () => bridge.listManuscriptVersions ? bridge.listManuscriptVersions(versionOwner.context) : []} onSave={name => withSavedManuscript(async selected => { if (!bridge.saveManuscriptVersion) throw new Error(t("Key versions are available in the desktop app.")); return bridge.saveManuscriptVersion({ ...selected.context, name }); })} onCompare={id => withSavedManuscript(async selected => { if (!bridge.compareManuscriptVersion) throw new Error(t("Key versions are available in the desktop app.")); return bridge.compareManuscriptVersion({ ...selected.context, id }); })} onRestore={restoreVersion} />}
     <div className={browserCollapsed && widePanes ? "paper-writing-workspace browser-collapsed" : "paper-writing-workspace"} ref={workspaceRef} style={paneStyle}>
       <aside className="paper-source-browser"><div className="paper-browser-title"><FolderOpen size={14} /><strong>{projectLabel}</strong>{activeProject && <div className="paper-browser-actions"><button onClick={() => { setCreateKind("file"); setCreateName("section.tex"); }} aria-label="New LaTeX file"><FilePlus2 size={14} /></button><button onClick={() => { setCreateKind("folder"); setCreateName("figures"); }} aria-label="New folder"><FolderPlus size={14} /></button></div>}</div><label className="paper-main-document">Main document<select value={mainPath} disabled={!activeProject} onChange={(event) => { setMainPath(event.target.value); void openFile(event.target.value); }}>{!activeProject && <option value="">Choose a project first</option>}{mainChoices.map((project) => <option key={project.path} value={project.path}>{project.path}</option>)}</select></label><div className="paper-tree-scroll">{activeProject ? tree.entries.map((entry) => <TreeNode key={entry.path} entry={entry} depth={0} selected={file?.path || ""} activeDirectory={activeDirectory} expanded={expanded} loading={loading} onToggle={toggleDirectory} onLoad={(path) => void loadDirectory(path)} onOpen={(path) => void openFile(path)} />) : <StateView compact className="paper-project-placeholder" icon={<FolderOpen size={20} />} title={t("No project selected")} description={t("Choose an existing manuscript or start a new one.")} />}</div><div className="paper-pane-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file browser" title="Drag to resize · double-click to reset" aria-valuemin={BROWSER_MIN_WIDTH} aria-valuemax={BROWSER_MAX_WIDTH} aria-valuenow={Math.round(browserWidth)} tabIndex={0} onPointerDown={(event) => beginPaneResize("browser", event)} onPointerMove={movePaneResize} onPointerUp={endPaneResize} onPointerCancel={endPaneResize} onDoubleClick={() => setBrowserWidth(BROWSER_DEFAULT_WIDTH)} onKeyDown={(event) => handlePaneResizeKey("browser", event)} /></aside>
-      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button><span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
+      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button><span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><span className="paper-continuity-tools"><button className="paper-pane-action icon" disabled={!mainPath || !projectId || !workspaceId || !bridge.saveManuscriptVersion || versionsBusy || compileState === "compiling"} onClick={() => openVersions()} title={t("Key versions")} aria-label={t("Key versions")}><History size={14} /></button></span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
         {searchOpen && file && <div className="latex-source-search" id={searchId} role="search" aria-label={t("Search source")}>
           <Search size={14} aria-hidden="true" />
           <input ref={searchInputRef} type="text" value={searchQuery} onChange={(event) => changeSearch(event.target.value)} onKeyDown={(event) => {

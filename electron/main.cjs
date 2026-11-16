@@ -69,6 +69,7 @@ const { searchConferencePapers } = require("./conferences.cjs");
 const skillCatalog = require("./skill-catalog.cjs");
 const speech = require("./speech.cjs");
 const store = require("./store.cjs");
+const { registerPaperWritingCommands } = require("./paper-writing-commands.cjs");
 const { createWorkspaceIpc, resolveResearchContext, isWorkspaceDataChannel } = require("./workspace-context.cjs");
 const workspaceFiles = require("./workspace-files.cjs");
 const latexWorkspace = require("./latex-workspace.cjs");
@@ -1040,6 +1041,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("research:snapshot", () => store.getSnapshot());
+  registerPaperWritingCommands({ ipcMain, store });
   registerThreadCommands({ ipcMain, store, agent, modelConfig, dialog, BrowserWindow,
     dataWorkspace: (event, input) => workspaceForWindow(BrowserWindow.fromWebContents(event.sender)) || resolveWorkspace(input.workspace),
     nativeBackend: { getConfig: () => agentBackendConfig.get(), compact: (input) => nativeAgent.compactNative({ ...input, runtimeId: store.runtimeThreadId(input.thread.id) }) },
