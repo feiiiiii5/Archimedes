@@ -41,6 +41,8 @@ test("late run events and completion cannot adopt an empty task in another proje
   const running = submitPrompt("A question");
   scope.taskSelectionRef.current = selection("b");
   state.messages = [bMessage]; state.context = [bAttachment]; state.events = [];
+  receive({ type: "status", clientRunId: submitted.clientRunId, title: "A is starting" });
+  assert.deepEqual(state.events, [], "two empty thread IDs do not identify the same task");
   receive({ type: "approval", clientRunId: submitted.clientRunId, threadId: "created-a", action: { id: "a-write" } });
   assert.equal(scope.taskSelectionRef.current.projectId, "b");
   assert.equal(scope.taskSelectionRef.current.threadId, null);
@@ -53,4 +55,44 @@ test("late run events and completion cannot adopt an empty task in another proje
   assert.deepEqual(state.context, [bAttachment]);
   assert.equal(state.threads[0], resultThread);
   assert.equal(submitted.workspace, "/execution/a");
+});
+
+test("a delayed approval uses its original task for command execution and completion", async () => {
+  const helpers = await import("../src/task-selection.ts");
+  const { transformWithOxc } = await import("vite");
+  const a = { dataRoot: "/data", projectId: "a", workspaceId: "ws-a", threadId: "a", executionRoot: "/execution/a" };
+  const b = { ...a, projectId: "b", workspaceId: "ws-b", threadId: "b", executionRoot: "/execution/b" };
+  const state = { messages: [{ text: "B transcript" }], pending: { id: "b-pending" }, opened: 0, refreshed: 0, decremented: [] };
+  let resolve, command, receive;
+  const approved = new Promise(done => { resolve = done; });
+  const scope = {
+    ...helpers, crypto: global.crypto, t: value => value, taskOwnerKey: helpers.taskDraftKey(a), approvalThreadId: "a",
+    taskSelectionRef: { current: a }, activeRunRef: { current: null }, runningCommandOwnerRef: { current: null },
+    pendingAction: { id: "a-command", source: "agent", kind: "command", payload: { command: "echo approved" } }, runningSession: null,
+    openWorkbench() { state.opened++; }, refreshWorkspaceFiles() { state.refreshed++; }, setSelectionError() {},
+    setRunningSession(value) { scope.runningSession = value; }, setMessages(update) { state.messages = update(state.messages); },
+    setPendingAction(update) { state.pending = update(state.pending); },
+    setThreads(update) { const threads = update([{ id: "a", pending_actions: 1 }, { id: "b", pending_actions: 1 }]); state.decremented = threads; },
+    desktopBridge: { approveAgentAction: () => approved, runTerminal: async input => { command = input; return { sessionId: "a-command-session" }; }, onTerminalData(callback) { receive = callback; return () => {}; } },
+  };
+  const start = source.indexOf("    const unsubscribe = desktopBridge.onTerminalData(");
+  const end = source.indexOf("\n    return unsubscribe;", start);
+  const { code } = await transformWithOxc(["clearThreadPendingAction", "approvePendingAction", "runCommand"].map(extract).join("\n") + "\n" + source.slice(start, end), "approval-owner-callbacks.ts");
+  const approve = new Function("scope", `with (scope) { ${code}; return approvePendingAction; }`)(scope);
+  const completing = approve();
+  scope.taskSelectionRef.current = b;
+  resolve(); await completing;
+  assert.equal(command.cwd, "/execution/a");
+  assert.equal(scope.runningCommandOwnerRef.current, helpers.taskDraftKey(a));
+  assert.equal(state.opened, 0, "late approval does not open the current project's workbench");
+  assert.equal(state.pending.id, "b-pending");
+  assert.deepEqual(state.decremented.map(thread => thread.pending_actions), [0, 1]);
+  receive({ sessionId: "a-command-session", data: "[process exited 0]" });
+  assert.deepEqual(state.messages, [{ text: "B transcript" }]);
+  scope.taskSelectionRef.current = a;
+  scope.pendingAction = { id: "a-write", source: "agent", kind: "write", payload: { path: "result.txt" } };
+  let resolveWrite;
+  scope.desktopBridge.approveAgentAction = () => new Promise(done => { resolveWrite = done; });
+  const writing = approve(); scope.taskSelectionRef.current = b; resolveWrite(); await writing;
+  assert.equal(state.refreshed, 0, "late write approval does not refresh B with A's file tree");
 });

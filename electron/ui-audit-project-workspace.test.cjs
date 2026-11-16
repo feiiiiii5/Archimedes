@@ -46,7 +46,7 @@ test("the renderer resolves session → project → primary workspace for tools"
   assert.match(selection, /executionRoot: thread\.workspace_path \|\| selected!\.root/);
   assert.match(selection, /selected\?\.root \|\| project\?\.workspace_path \|\| dataRoot/);
   assert.match(app, /runAgent\(\{ prompt: requestPrompt, workspace: owner\.executionRoot/);
-  assert.match(app, /runTerminal\(\{ command: trimmedCommand, cwd: executionWorkspace/);
+  assert.match(app, /runTerminal\(\{ command: trimmedCommand, cwd: owner\.executionRoot/);
   assert.match(app, /writeWorkspaceFile\(executionWorkspace/);
   assert.match(app, /workspace=\{executionWorkspace\}/);
   assert.match(app, /desktopBridge\.watchWorkspace\?\.\(executionWorkspace\)/);
