@@ -55,13 +55,15 @@ function registerThreadCommands({ ipcMain, store, agent, modelConfig, dialog, Br
   }
   ipcMain.handle("research-thread:create", (event, input = {}) => {
     store.openWorkspace(dataWorkspace(event, input));
+    const { resolveResearchContext } = require("./workspace-context.cjs");
+    const context = resolveResearchContext(store.currentStore(), { projectId: input.projectId, workspaceId: input.workspaceId, workspace: input.workspacePath });
     const thread = store.createResearchThread({
       prompt: "New conversation",
       title: typeof input.title === "string" ? input.title : "New conversation",
       mode: "free-chat",
-      projectId: input.projectId,
-      workspacePath: input.workspacePath,
-      workspaceId: input.workspaceId,
+      projectId: context.projectId,
+      workspacePath: context.workspace,
+      workspaceId: context.workspaceId,
       visibility: input.visibility,
     });
     return store.getResearchThread(thread.id);
