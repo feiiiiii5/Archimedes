@@ -2568,18 +2568,6 @@ function bindResearchThreadHarness(id, harness) {
 }
 
 
-function bindResearchThreadWorkspace(id, workspaceId, workspacePath) {
-  const db = requireDatabase();
-  const thread = getResearchThread(id);
-  if (!canAccessProject(thread.project_id, "editor")) throw new Error("You do not have permission to edit this conversation.");
-  const workspace = db.prepare("SELECT * FROM project_workspaces WHERE id = ? AND project_id = ?").get(workspaceId, thread.project_id);
-  if (!workspace) throw new Error("That workspace does not belong to this project.");
-  // Imported conversations acquire a local execution location on first use.
-  // Existing historical sessions keep the directory in which they ran.
-  db.prepare("UPDATE research_threads SET workspace_id = COALESCE(workspace_id, ?), workspace_path = COALESCE(NULLIF(workspace_path, ''), ?) WHERE id = ?")
-    .run(workspaceId, normalizeWorkspacePath(workspacePath), id);
-  return getResearchThread(id);
-}
 
 function setResearchThreadVisibility(id, visibility) {
   const db = requireDatabase();
@@ -3693,7 +3681,6 @@ module.exports = {
   renameResearchProject,
   setResearchProjectWorkspace,
   defaultResearchProject,
-  bindResearchThreadWorkspace,
   createResearchThread,
   deleteLibrary,
   deleteInternalPaperReviewThreads,

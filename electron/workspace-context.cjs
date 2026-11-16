@@ -22,10 +22,7 @@ function resolveResearchContext(store, input = {}) {
   if (!workspace || workspace.project_id !== project.id) throw new Error("That workspace does not belong to this project.");
   const executionRoot = canonicalWorkspace(thread?.workspace_path || workspace.root || project.workspace_path || store.workspace);
   if (input.workspace && canonicalWorkspace(input.workspace) !== executionRoot) throw new Error("The execution folder does not match this conversation or project workspace.");
-  const resolvedThread = thread && (!thread.workspace_path || !thread.workspace_id)
-    ? store.bindResearchThreadWorkspace(thread.id, workspace.id, executionRoot)
-    : thread;
-  return { dataRoot: store.workspace, projectId: project.id, workspaceId: workspace.id, workspace: executionRoot, thread: resolvedThread };
+  return { dataRoot: store.workspace, projectId: project.id, workspaceId: workspace.id, workspace: executionRoot, thread };
 }
 
 /** Each invocation retains the sender's store even after the window switches. */
