@@ -1,4 +1,4 @@
-import { exportBibliography, matchBibliographyPaper, parseBibliography, type BibliographyPaper } from "./bibliography";
+import { citationKeyIdentity, exportBibliography, matchBibliographyPaper, parseBibliography, type BibliographyPaper } from "./bibliography";
 
 type BibField = { name: string; valueStart: number; valueEnd: number; concatenated: boolean };
 type BibBlock = { start: number; end: number; key: string; fields: BibField[]; close: string; fieldsEnd: number };
@@ -8,18 +8,43 @@ function bibliographyBlocks(text: string): BibBlock[] {
   const blocks: BibBlock[] = [];
   let cursor = 0;
   const skip = () => { while (cursor < text.length) { if (/\s|,/.test(text[cursor])) cursor++; else if (text[cursor] === "%") { while (cursor < text.length && text[cursor] !== "\n") cursor++; } else break; } };
+  // Directive bodies are opaque: a commented-out entry must not become an
+  // editing target or reserve a citation key.
+  const skipDirective = (open: string, close: string) => {
+    cursor++;
+    let depth = 1, braces = 0;
+    while (cursor < text.length) {
+      const character = text[cursor];
+      if (character === "\\") { cursor += 2; continue; }
+      if (open === "{") {
+        if (character === "{") depth++;
+        else if (character === "}" && --depth === 0) { cursor++; return; }
+      } else {
+        if (character === "{") braces++;
+        else if (character === "}" && braces > 0) braces--;
+        else if (character === "(" && braces === 0) depth++;
+        else if (character === ")" && braces === 0 && --depth === 0) { cursor++; return; }
+      }
+      cursor++;
+    }
+  };
   while (cursor < text.length) {
     if (text[cursor] === "%") { while (cursor < text.length && text[cursor] !== "\n") cursor++; continue; }
     if (text[cursor] !== "@") { cursor++; continue; }
-    const start = cursor, header = /^@([a-z]+)\s*([{(])\s*([^,\s{}()]+)\s*,/i.exec(text.slice(cursor));
-    if (!header) { cursor++; continue; }
-    cursor += header[0].length;
-    const close = header[2] === "{" ? "}" : ")", fields: BibField[] = [];
+    const start = cursor, directive = /^@([a-z]+)\s*([{(])/i.exec(text.slice(cursor));
+    if (!directive) { cursor++; continue; }
+    const open = directive[2], close = open === "{" ? "}" : ")";
+    cursor += directive[0].length - 1;
+    if (["comment", "preamble", "string"].includes(directive[1].toLowerCase())) { skipDirective(open, close); continue; }
+    const header = /^@([a-z]+)\s*[{(]\s*([^,\s{}()]+)\s*,/i.exec(text.slice(start));
+    if (!header) { cursor = start + 1; continue; }
+    cursor = start + header[0].length;
+    const fields: BibField[] = [];
     while (cursor < text.length) {
       skip();
       if (text[cursor] === close) {
         const fieldsEnd = cursor++;
-        if (!["comment", "preamble", "string"].includes(header[1].toLowerCase())) blocks.push({ start, end: cursor, key: header[3], fields, close, fieldsEnd });
+        blocks.push({ start, end: cursor, key: header[2], fields, close, fieldsEnd });
         break;
       }
       const field = /^([a-z][\w-]*)\s*=\s*/i.exec(text.slice(cursor));
@@ -50,6 +75,13 @@ export function citationKeyFor(paper: BibliographyPaper) {
   return paper.citekey || `paper_${paper.id.replace(/[^a-z0-9]/gi, "")}`;
 }
 
+function hasTrailingFieldSeparator(content: string, block: BibBlock) {
+  const lastField = block.fields[block.fields.length - 1];
+  if (!lastField) return content.slice(block.start, block.fieldsEnd).trimEnd().endsWith(",");
+  const tail = content.slice(lastField.valueEnd, block.fieldsEnd).replace(/%[^\n]*/g, "").trimStart();
+  return tail.startsWith(",");
+}
+
 export function prepareManuscriptCitation(content: string, paper: BibliographyPaper, update = true) {
   const blocks = bibliographyBlocks(content), marker = `% Archimedes paper: ${encodeURIComponent(paper.id)}`;
   const markerAt = content.indexOf(marker);
@@ -68,7 +100,7 @@ export function prepareManuscriptCitation(content: string, paper: BibliographyPa
     if (matched) existing = blocks.find(block => block.key === matched.citekey);
   }
   let citekey = existing?.key || citationKeyFor(paper), suffix = 2;
-  while (!existing && blocks.some(block => block.key === citekey)) citekey = `${citationKeyFor(paper)}_${suffix++}`;
+  while (!existing && blocks.some(block => citationKeyIdentity(block.key) === citationKeyIdentity(citekey))) citekey = `${citationKeyFor(paper)}_${suffix++}`;
   const generated = exportBibliography([{ ...paper, citekey }]);
   if (!update) return { content, citekey, changed: false, action: "kept" as const };
   if (!existing) return { content: `${content}${content && !content.endsWith("\n") ? "\n" : ""}\n${marker}\n${generated}`, citekey, changed: true, action: "added" as const };
@@ -84,8 +116,8 @@ export function prepareManuscriptCitation(content: string, paper: BibliographyPa
     else additions.push(`  ${field.name} = ${value}`);
   }
   if (additions.length) {
-    const prefix = content.slice(existing.start, existing.fieldsEnd).trimEnd();
-    replacements.push({ start: existing.fieldsEnd, end: existing.fieldsEnd, value: `${prefix.endsWith(",") ? "" : ","}\n${additions.join(",\n")}\n` });
+    const separator = hasTrailingFieldSeparator(content, existing) ? "" : ",";
+    replacements.push({ start: existing.fieldsEnd, end: existing.fieldsEnd, value: `${separator}\n${additions.join(",\n")}\n` });
   }
   if (markerAt < 0) replacements.push({ start: existing.start, end: existing.start, value: `${marker}\n` });
   let next = content;

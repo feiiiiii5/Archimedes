@@ -47,6 +47,64 @@ test("new references avoid collisions and keep their key when metadata changes",
   assert.deepEqual(citations.manuscriptBibliographyPaths("\\bibliography{refs,other}\n\\addbibresource[location=local]{nested/custom.bib}", "paper/main.tex"), ["paper/refs.bib", "paper/other.bib", "paper/nested/custom.bib"]);
 });
 
+test("generated keys that normalize alike are disambiguated against the manuscript and earlier inserts", async () => {
+  const fixturePaper = require("./test-support/bibliography-fixture.cjs").paper;
+  const existing = "@article{PAPER_PAPERA, title={Existing target}, doi={10.0000/existing}}\n";
+  const firstPaper = { ...fixturePaper, id: "paper-a", title: "First inserted", doi: "10.5555/first", citekey: "", entry_type: "article" };
+  const secondPaper = { ...fixturePaper, id: "papera", title: "Second inserted", doi: "10.5555/second", citekey: "", entry_type: "article" };
+  const first = citations.prepareManuscriptCitation(existing, firstPaper);
+  assert.equal(first.citekey, "paper_papera_2");
+  const second = citations.prepareManuscriptCitation(first.content, secondPaper);
+  assert.equal(second.citekey, "paper_papera_3");
+  assert.ok(second.content.includes(existing.trimEnd()), "the existing entry and its citation target stay unchanged");
+  const bibliography = await import("../src/bibliography.ts");
+  const parsed = bibliography.parseBibliography(second.content).entries;
+  assert.equal(parsed.find((entry) => entry.citekey === "PAPER_PAPERA").paper.title, "Existing target");
+  assert.equal(parsed.find((entry) => entry.citekey === "paper_papera_2").paper.title, "First inserted");
+  assert.equal(parsed.find((entry) => entry.citekey === "paper_papera_3").paper.title, "Second inserted");
+  const keys = parsed.map((entry) => entry.citekey.toLowerCase());
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+
+test("citation keys collide case-insensitively with manuscript entries", () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "case", citekey: "Smith2020", entry_type: "article" };
+  const prepared = citations.prepareManuscriptCitation("@article{smith2020, title={Existing}, doi={10.0000/existing}}\n", paper);
+  assert.equal(prepared.citekey, "Smith2020_2");
+  assert.match(prepared.content, /@article\{Smith2020_2,/);
+});
+
+
+test("commented-out entries neither reserve keys nor receive metadata updates", async () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "commented", citekey: "commentedKey", entry_type: "article" };
+  const original = `@comment{@article{commentedKey, title={Commented}, doi={${paper.doi}}}}\n@comment(@article{commentedKey, title={Parenthesized}})\n`;
+  const prepared = citations.prepareManuscriptCitation(original, paper);
+  assert.equal(prepared.action, "added");
+  assert.equal(prepared.citekey, "commentedKey");
+  assert.ok(prepared.content.includes("@comment{@article{commentedKey, title={Commented}"));
+  const bibliography = await import("../src/bibliography.ts");
+  const parsed = bibliography.parseBibliography(prepared.content);
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].paper.title, paper.title);
+});
+
+
+test("adding fields after a trailing comma and percent comment keeps a single separator", async () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "trailing-comment", citekey: "commaKey", entry_type: "article" };
+  const original = `@article{handKey,\n title={Replaced title},\n doi={${paper.doi}}, % keep this comment\n}\n`;
+  const prepared = citations.prepareManuscriptCitation(original, paper);
+  assert.equal(prepared.citekey, "handKey");
+  assert.ok(prepared.content.includes("% keep this comment"));
+  assert.ok(!/,\s*%[^\n]*\n\s*,/.test(prepared.content), "no separator after the comment line");
+  assert.ok(!/,\s*\n\s*,/.test(prepared.content), "no doubled separator");
+  const bibliography = await import("../src/bibliography.ts");
+  const parsed = bibliography.parseBibliography(prepared.content);
+  assert.deepEqual(parsed.warnings, []);
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].paper.doi, paper.doi);
+});
+
+
 test("updating a DOI-matched concatenated field consumes its whole expression and preserves unrelated bytes", () => {
   const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "concatenated-paper", citekey: "libraryKey", entry_type: "article" };
   const directive = '@string{suffix = " appendix"}\n';
