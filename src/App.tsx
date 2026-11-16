@@ -1095,7 +1095,18 @@ const previewBridge = {
     if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
     return { opened: true };
   },
-  getWorkbenchNote: async (key: string) => ({ content: window.localStorage.getItem(`archimedes-workbench-note:${key}`) || "", updatedAt: null }),
+  getWorkbenchNote: async (key: string) => {
+    const storageKey = `archimedes-workbench-note:${key}`;
+    let content = window.localStorage.getItem(storageKey) || "";
+    const owner = key.match(/^owner:(thread|new):(\[.*\])$/);
+    if (!content && owner) {
+      const parts = JSON.parse(owner[2]) as Array<string | null>;
+      const legacyKey = `archimedes-workbench-note:${owner[1] === "thread" ? parts[1] : `draft:${parts[0]}`}`;
+      content = window.localStorage.getItem(legacyKey) || "";
+      if (content) { window.localStorage.setItem(storageKey, content); window.localStorage.removeItem(legacyKey); }
+    }
+    return { content, updatedAt: null };
+  },
   saveWorkbenchNote: async (key: string, content: string) => {
     if (content.trim()) window.localStorage.setItem(`archimedes-workbench-note:${key}`, content);
     else window.localStorage.removeItem(`archimedes-workbench-note:${key}`);
@@ -1600,8 +1611,7 @@ function App() {
   const viewingRunningTask = agentBusy && (runningOwnerKey === composerDraftKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   executionWorkspaceRef.current = executionWorkspace;
-  const draftNoteKey = `draft:${composerDraftKey}`;
-  const noteStorageKey = activeThreadId ?? draftNoteKey;
+  const noteStorageKey = `owner:${composerDraftKey}`;
   const noteKey = composerDraftKey;
   const noteValue = noteLoadedKey === noteKey ? noteValues[noteKey] ?? "" : "";
   noteKeyRef.current = noteKey;
@@ -2912,8 +2922,8 @@ function App() {
         const draftNote = noteValuesRef.current[ownerKey] ?? "";
         if (draftNote.trim()) {
           try {
-            await desktopBridge.saveWorkbenchNote(result.threadId, draftNote);
-            await desktopBridge.deleteWorkbenchNote(`draft:${ownerKey}`);
+            await desktopBridge.saveWorkbenchNote(`owner:${taskDraftKey(resultSelection)}`, draftNote);
+            await desktopBridge.deleteWorkbenchNote(`owner:${ownerKey}`);
             setNoteValues((current) => ({ ...current, [taskDraftKey(resultSelection)]: draftNote, [ownerKey]: "" }));
           } catch { /* Keep the draft so it can be recovered. */ }
         }
@@ -2974,7 +2984,7 @@ function App() {
       runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
-      updateComposer(composerDraftKey, (session) => ({ ...session, error: `${t("The command could not start.")} ${String(error)}` }));
+      updateComposer(ownerKey, (session) => ({ ...session, error: `${t("The command could not start.")} ${String(error)}` }));
     }
   }
 
