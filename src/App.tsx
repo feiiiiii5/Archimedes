@@ -1383,6 +1383,7 @@ function App() {
   const [trajectoryEvents, setTrajectoryEvents] = useState<ResearchEvent[]>([]);
   const [workspace, setWorkspace] = useState(DEFAULT_WORKSPACE);
   const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [workspaceOpenError, setWorkspaceOpenError] = useState("");
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [archivedProjects, setArchivedProjects] = useState<ResearchProject[]>([]);
   const [threads, setThreads] = useState<ResearchThread[]>([]);
@@ -2315,9 +2316,12 @@ function App() {
     if (hasDirtyFileEditorScopes(fileEditorScopesRef.current) && !(await confirm({ title: "Discard unsaved changes?", description: "Artifact changes that have not been saved will be lost.", confirmLabel: "Discard changes", destructive: true }))) return;
     const requestId = ++threadOpenRequestRef.current;
     dataFolderLoadingRef.current = true;
-    setWorkspaceReady(false);
+    let opened = false;
     try {
       const snapshot = await desktopBridge.openWorkspace(workspacePath);
+      opened = true;
+      setWorkspaceOpenError("");
+      setWorkspaceReady(false);
       const knownProjects = new Set((snapshot.projects ?? []).map((project) => project.id));
       const rememberedProject = readPreferredProject(snapshot.workspace);
       let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
@@ -2369,10 +2373,15 @@ function App() {
       replaceFileEditorScopes({});
       setSelectionError(openingError);
     } catch (error) {
-      if (requestId === threadOpenRequestRef.current) setSelectionError(`${t("Could not open the data folder.")} ${String(error)}`);
+      if (requestId !== threadOpenRequestRef.current) return;
+      if (opened) setSelectionError(`${t("Could not open the data folder.")} ${String(error)}`);
+      else {
+        const message = error instanceof Error ? error.message : String(error);
+        setWorkspaceOpenError(message.replace(/^Error invoking remote method '[^']+':\s*/i, "").replace(/^Error:\s*/i, ""));
+      }
     } finally {
       dataFolderLoadingRef.current = false;
-      if (requestId === threadOpenRequestRef.current) setWorkspaceReady(true);
+      if (opened && requestId === threadOpenRequestRef.current) setWorkspaceReady(true);
     }
   }
 
@@ -3838,6 +3847,11 @@ function App() {
         onClose={() => setModal(null)}
         onCreateFile={() => void createFile()}
       />
+      <Dialog open={Boolean(workspaceOpenError)} onClose={() => setWorkspaceOpenError("")} role="alertdialog" size="compact" ariaLabelledBy="workspace-open-error-heading" ariaDescribedBy="workspace-open-error-message">
+        <header className="app-dialog-header"><h2 id="workspace-open-error-heading">{t("Unable to open workspace")}</h2></header>
+        <div className="app-dialog-body" id="workspace-open-error-message">{t(workspaceOpenError)}</div>
+        <footer className="app-dialog-footer"><button className="primary-button" onClick={() => setWorkspaceOpenError("")}>{t("Close")}</button></footer>
+      </Dialog>
       <TerminalSettingsModal open={terminalSettingsOpen && terminalSettingsMode === "onboarding"} mode="onboarding" settings={terminalSettings} workspace={executionWorkspace} onClose={closeTerminalSettings} onSave={saveTerminalSettings} onOpenExternal={openExternalTerminal} />
       <AuthModal
         open={authModalOpen}
