@@ -595,3 +595,26 @@ test("Writing reserves keys from every directly declared bibliography and writes
   assert.equal(fs.readFileSync(file("other.bib"), "utf8"), other);
   assert.deepEqual(f.writes.filter(write => write.name.endsWith(".bib")).map(write => write.name), ["paper/refs.bib"]);
 });
+
+test("Writing keeps bibliography-only updates available while Co-edit owns the manuscript text", async t => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "coeditFixture" };
+  const f = await fixture(t, { bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] } });
+  const original = f.disk(f.a);
+  await f.render(f.a);
+  await autoCompileOff();
+  await click("Co-edit this source with project members");
+  await click("Insert citation");
+  const action = label => [...document.querySelectorAll("button")].find(button => button.textContent.trim() === label);
+  assert.equal(action("Insert citation only").disabled, true);
+  assert.equal(action("Insert citation and update .bib").disabled, true);
+  assert.equal(action("Update .bib only").disabled, false);
+  assert.match(document.body.textContent, /Turn off Co-edit to insert a citation\./);
+  await clickText("Update .bib only");
+  assert.equal(f.disk(f.a), original);
+  assert.match(fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8"), /@article\{coeditFixture,/);
+  await click("Close citations");
+  await click("Co-edit this source with project members");
+  await click("Insert citation");
+  assert.equal(action("Insert citation only").disabled, false);
+  assert.equal(action("Insert citation and update .bib").disabled, false);
+});

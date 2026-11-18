@@ -19,5 +19,6 @@ export const writingCitations: Record<string, string> = {
   "Search project references": "搜索项目参考文献",
   "Search title, author or citation key": "搜索标题、作者或引用键",
   "The manuscript is busy. Try again after saving.": "稿件正在保存，请稍后重试。",
+  "Turn off Co-edit to insert a citation.": "关闭协作编辑后再插入引用。",
   "Update .bib only": "只更新 .bib",
 };

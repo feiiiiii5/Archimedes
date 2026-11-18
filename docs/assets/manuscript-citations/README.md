@@ -60,3 +60,17 @@ compiled with two bibliography items, `shared` for the original book and
 | Before | After |
 | --- | --- |
 | [Two citations used the same key](multiple-files-before.png) | [The inserted citation has its own key](multiple-files-after.png) |
+
+## Citation actions during Co-edit
+
+These matched 1560 × 980 Charcoal captures use the compiled Electron app and
+its actual Y.Text editor, with an in-memory stand-in for the cloud transport.
+In the old build (`4a66519`), insertion reached the local file but the next
+shared edit saved it away. In the updated dialog, adding a citation requires
+leaving Co-edit. Updating `.bib` metadata remains available and the local main
+file keeps its original bytes. Both citation insertion actions return when
+Co-edit is turned off.
+
+| Before | After |
+| --- | --- |
+| [Insertion is offered while editing shared text](coedit-before.png) | [Only the bibliography update is available in Co-edit](coedit-after.png) |

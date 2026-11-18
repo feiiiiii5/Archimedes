@@ -27,3 +27,6 @@ All writes use the existing manuscript owner's save queue, including a `.bib`
 with unsaved edits. Bibliography inclusion commands are not added automatically:
 use the manuscript's existing `\bibliography{...}` or `\addbibresource{...}`
 setup, then recompile to refresh the preview.
+
+When using Co-edit, turn it off before inserting a citation into the manuscript.
+**Update .bib only** remains available while the shared text is open.

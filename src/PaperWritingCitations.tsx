@@ -8,11 +8,12 @@ import "./paper-writing-citations.css";
 
 export type CitationAction = "insert-update" | "update" | "insert";
 
-export default function PaperWritingCitations({ bridge, projectId, mainPath, bibliographyPaths, onClose, onApply }: {
+export default function PaperWritingCitations({ bridge, projectId, mainPath, bibliographyPaths, insertionDisabled, onClose, onApply }: {
   bridge: ResearchDeskBridge;
   projectId: string;
   mainPath: string;
   bibliographyPaths: string[];
+  insertionDisabled: boolean;
   onClose(): void;
   onApply(paper: BibliographyPaper, path: string, action: CitationAction): Promise<string>;
 }) {
@@ -53,8 +54,9 @@ export default function PaperWritingCitations({ bridge, projectId, mainPath, bib
       <div className="paper-citation-results" aria-label={t("Project references")}>{loading ? <p><LoaderCircle size={15} className="spin" />{t("Loading project references…")}</p> : results.length ? results.map(item => <button key={item.id} className={selected === item.id ? "paper-citation-result active" : "paper-citation-result"} onClick={() => { setSelected(item.id); setNotice(""); }}><BookOpen size={15} /><span><strong>{item.title}</strong><small>{item.authors.join(", ")} · {item.year || "—"} · {citationKeyFor(item)}</small></span></button>) : <p>{t("No matching project references. Add papers to this project's library first.")}</p>}</div>
       <label className="paper-citation-target">{t("Manuscript .bib file")}<input value={target} onChange={event => setTarget(event.target.value)} list="paper-bibliography-paths" aria-label={t("Manuscript .bib file")} /><datalist id="paper-bibliography-paths">{bibliographyPaths.map(name => <option key={name} value={name} />)}</datalist></label>
       {paper && <p className="paper-citation-hint">{t("Citation key")}: <code>{citationKeyFor(paper)}</code>. {t("An existing matching entry keeps its manuscript key and hand-written fields; only supplied metadata is updated.")}</p>}
+      {insertionDisabled && <p className="paper-citation-hint">{t("Turn off Co-edit to insert a citation.")}</p>}
       {error && <p role="alert" className="paper-citation-error">{t(error)}</p>}{notice && <p role="status">{notice}</p>}
     </div>
-    <footer className="app-dialog-footer"><button className="secondary-button" disabled={busy || !paper} onClick={() => void apply("insert")}>{t("Insert citation only")}</button><button className="secondary-button" disabled={busy || !paper} onClick={() => void apply("update")}>{t("Update .bib only")}</button><button className="primary-button" disabled={busy || !paper} onClick={() => void apply("insert-update")}>{busy ? <LoaderCircle className="spin" size={14} /> : null}{t("Insert citation and update .bib")}</button></footer>
+    <footer className="app-dialog-footer"><button className="secondary-button" disabled={busy || !paper || insertionDisabled} onClick={() => void apply("insert")}>{t("Insert citation only")}</button><button className="secondary-button" disabled={busy || !paper} onClick={() => void apply("update")}>{t("Update .bib only")}</button><button className="primary-button" disabled={busy || !paper || insertionDisabled} onClick={() => void apply("insert-update")}>{busy ? <LoaderCircle className="spin" size={14} /> : null}{t("Insert citation and update .bib")}</button></footer>
   </Dialog>;
 }
