@@ -52,3 +52,19 @@ Writing opens the main file and the main file, section, and bibliography on
 disk match their original contents.
 
 ![The saved version can restore all three missing files](reopen-comparison.png)
+
+## Recover a key version from an earlier project folder
+
+Both production Electron builds saved **Validated optics results** without a
+chat. The project's default execution folder then moved to another folder
+with its own `paper/main.tex`. After restart, both builds opened that new
+manuscript and its **Key versions** dialog at 1,180 × 900 in Charcoal.
+
+| Before (`ccb125f`) | After (`187b004`) |
+| --- | --- |
+| ![The previous folder's saved version is missing](historical-folder-before.png) | ![The saved version lists its original folder](historical-folder-after.png) |
+
+The restored line belongs to the manuscript in the original folder. The
+current editor and its source retain their own contents.
+
+![The comparison identifies the original folder and provides the restore action](historical-folder-comparison.png)
