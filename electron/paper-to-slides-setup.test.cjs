@@ -119,7 +119,10 @@ test("the real presence script can permit a limited generation environment while
   assert.equal(limited.checks.find(check => check.id === "node:react-icons").status, "optional");
   assert.equal(limited.canStart, true);
   const noToken = await checkPaperToSlidesSetup({ backend: "claude", hasTaskToken: false }, options);
-  assert.equal(noToken.canStart, false); assert.equal(noToken.checks.find(check => check.id === "mineru-token").status, "missing");
+  assert.equal(noToken.canStart, true);
+  const tokenCheck = noToken.checks.find(check => check.id === "mineru-token");
+  assert.equal(tokenCheck.status, "optional");
+  assert.match(tokenCheck.detail, /\.env/);
 });
 
 test("a stalled npm root subprocess is bounded and killed with the real Python probe process group", { skip: process.platform === "win32" ? "POSIX descendant fixture; Windows uses the existing taskkill runner path" : false }, async t => {

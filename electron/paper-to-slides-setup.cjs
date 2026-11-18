@@ -65,9 +65,9 @@ async function checkPaperToSlidesSetup(input = {}, { python, env = process.env, 
     name === "pptxgenjs" ? "Make pptxgenjs available in the global npm directory used by the existing slide renderer."
       : `${name} is unavailable. Icon or image rendering may be limited.`);
   const token = input.hasTaskToken === true || report.mineru_token_configured === true;
-  checks.push({ id: "mineru-token", label: "MinerU token", status: token ? "ready" : "missing",
+  checks.push({ id: "mineru-token", label: "MinerU token", status: token ? "ready" : "optional",
     detail: token ? "Configured for this task or environment; authentication and network access were not checked."
-      : "Configure a MinerU token for this task before starting PDF parsing." });
+      : "The slide skill checks for a MinerU token at startup, including credentials configured in its .env file." });
   checks.push({ id: "fonts", label: "Fonts and visual output", status: "optional", detail: "Installed fonts, CJK rendering and visual output were not checked. CLI login is checked separately." });
   return { checks, canStart: checks.every(check => check.status !== "missing") };
 }

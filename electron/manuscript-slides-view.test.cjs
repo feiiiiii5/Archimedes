@@ -59,16 +59,48 @@ test("setup renders missing and optional dependency diagnostics in Chinese", asy
     getAgentBackendConfig: async () => ({ backend: "codex", binary: "codex", model: "" }),
     checkAgentBackend: async () => ({ ready: true, message: "Local fixture", models: [] }),
     checkPaperToSlidesSetup: async () => ({ canStart: false, checks: [
-      { id: "mineru-token", label: "MinerU token", status: "missing", detail: "Configure a MinerU token for this task before starting PDF parsing." },
+      { id: "python:requests", label: "Python requests", status: "missing", detail: "Add requests to the Python environment used by the slide skill." },
       { id: "fonts", label: "Fonts and visual output", status: "optional", detail: "Installed fonts, CJK rendering and visual output were not checked. CLI login is checked separately." },
     ] }),
   };
   try {
     await React.act(async () => root.render(React.createElement(views.PaperToSlidesView, { bridge, workspace: "/target", busy: false })));
     await click(document, "检查任务环境");
-    assert.match(document.querySelector(".slides-setup").textContent, /请为本次任务配置 MinerU Token/);
+    assert.match(document.querySelector(".slides-setup").textContent, /请在幻灯片技能使用的 Python 环境中安装 requests/);
     assert.match(document.querySelector(".slides-setup details").textContent, /字体与视觉效果/);
     assert.match(document.querySelector(".slides-setup details").textContent, /命令行登录状态会单独检查/);
+  } finally {
+    await React.act(async () => root.unmount());
+    locale = {};
+  }
+});
+
+test("an unverified MinerU token permits start and a wrapped manuscript-stage rejection is localized", async () => {
+  const { paperSlides } = await import("../src/i18n/translations/paperSlides.ts");
+  const { paperReview } = await import("../src/i18n/translations/paperReview.ts");
+  locale = { ...paperSlides, ...paperReview };
+  const root = createRoot(document.getElementById("root"));
+  let starts = 0;
+  const bridge = {
+    getAgentBackendConfig: async () => ({ backend: "codex", binary: "codex", model: "" }),
+    checkAgentBackend: async () => ({ ready: true, message: "Local fixture", models: [] }),
+    checkPaperToSlidesSetup: async () => ({ canStart: true, checks: [
+      { id: "mineru-token", label: "MinerU token", status: "optional", detail: "The slide skill checks for a MinerU token at startup, including credentials configured in its .env file." },
+    ] }),
+  };
+  try {
+    await React.act(async () => root.render(React.createElement(views.PaperToSlidesView, {
+      bridge, workspace: "/target", dataRoot: origin.dataRoot, projectId: origin.projectId, busy: false,
+      manuscriptRequest: { origin, token: "ready" }, onStart: async () => {
+        starts++;
+        throw new Error("Error invoking remote method 'paper-to-slides:stage': Error: Save and compile the current manuscript before handing it off.");
+      },
+    })));
+    await click(document, "检查任务环境");
+    assert.match(document.querySelector(".slides-setup").textContent, /启动时检查 MinerU Token/);
+    await click(document, "生成演示文稿");
+    assert.equal(starts, 1);
+    assert.equal(document.querySelector(".slides-error").textContent, "请保存并编译当前稿件，然后再交接。");
   } finally {
     await React.act(async () => root.unmount());
     locale = {};
