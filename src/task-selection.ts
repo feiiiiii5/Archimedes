@@ -35,3 +35,7 @@ export function taskDraftKey(selection: TaskSelection): string {
 export function analysisOwnerKey(selection: TaskSelection): string {
   return JSON.stringify([selection.dataRoot, selection.projectId, selection.workspaceId, selection.executionRoot]);
 }
+
+export function composerStorageKey(selection: TaskSelection): string {
+  return selection.threadId ?? `new:${selection.projectId ?? "none"}:${selection.executionRoot}`;
+}

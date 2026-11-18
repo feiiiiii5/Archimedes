@@ -33,7 +33,7 @@ test("a first result adopts its own draft and cannot affect an empty task in ano
     setSelectionError: update("error"), setMessages: update("messages"), setEvents: update("events"), setThreads: update("threads"), setPendingAction: update("pending"),
     setContextItems(updater, key) { if (key === helpers.taskDraftKey(scope.taskSelectionRef.current)) state.context = updater(state.context); },
     setResearchMode() {}, clearPendingAssistantDeltas() {}, setRunningOwnerKey() {}, setRunningThreadId() {}, setAgentBusy() {}, setInterrupting() {}, setNativeStream() {}, setNativeQuestions() {}, setBoundHarness() {}, setTrajectoryEvents() {}, setChangeSets() {}, setArtifactsVersion() {},
-    updateComposer() {}, moveNewTaskComposer(from, to) { state.adoptions.push([from, to]); },
+    updateComposer() {}, moveWorkbenchNote() {}, moveNewTaskComposer(from, to) { state.adoptions.push([from, to]); },
     applyTaskSelection(next) { scope.taskSelectionRef.current = next; },
     desktopBridge: { runAgent(input) { submitted = input; return pending; }, onAgentEvent(callback) { receive = callback; return () => {}; } },
   };

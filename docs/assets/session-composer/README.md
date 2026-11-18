@@ -5,3 +5,13 @@ The News pair renders the actual News view in Electron at 1100 × 660, Charcoal 
 | Before | After |
 | --- | --- |
 | ![News header before](news-before.png) | ![News header with the chat target](news-after.png) |
+
+## Note autosave during a workspace switch
+
+Both captures show the Electron Notes panel in Charcoal at 1440 × 1000. After an edit in an empty Optics conversation, the user switched to Materials and back within 110 ms. The normal note debounce is 600 ms.
+
+Before at `585e5b1`, returning to Optics reloaded the earlier note. With the fix in `e13e76f`, the new Optics text stayed visible and was saved. A read of the stored notes confirmed that the Materials note retained its own text.
+
+| Before | After |
+| --- | --- |
+| ![Optics shows the earlier note after returning](note-autosave-before.png) | ![Optics shows the latest note after returning and saving](note-autosave-after.png) |
