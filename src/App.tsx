@@ -3612,7 +3612,7 @@ function App() {
     "data-charts": <DataChartsView active={mainSection === "data-charts"} />,
     "data-analysis": <DataAnalysisView onAskAI={(text) => sendNoteToChat(text, "replace")} />,
     "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={newPaperTask.executionRoot} dataRoot={workspace} projectId={newPaperTask.projectId} ownerKey={taskDraftKey(newPaperTask)} nativeConfig={nativeBackend} onOpenModelSettings={() => { setSettingsSection("models"); setSettingsOpen(true); }} onConfigureSetup={(text) => sendNoteToChat(text, "append")} active={mainSection === "paper-to-slides"} busy={agentBusy} manuscriptRequest={manuscriptRequests["paper-to-slides"]} onReturnToManuscript={returnToManuscript} onStart={(input) => startSlidesFromPaper(input, newPaperTask)} />,
-    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} onHandoff={prepareManuscriptHandoff} active={mainSection === "writing"} />,
+    writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} threadId={activeThreadId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} onHandoff={prepareManuscriptHandoff} active={mainSection === "writing"} />,
   };
   for (const entry of pluginEntries) {
     sidebarModuleContent[entry.id] = <PluginModuleView key={entry.id} entry={entry} />;
