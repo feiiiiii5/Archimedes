@@ -1566,6 +1566,7 @@ function App() {
   const openFilesRef = useRef<WorkspaceFilePreview[]>([]);
   const fileEditorScopesRef = useRef<FileEditorScopes>({});
   const noteValuesRef = useRef<Record<string, string>>({});
+  const noteEditsRef = useRef(new Map<string, { content: string; timer: number | null; state: "saving" | "saved" | "idle" }>());
   const noteKeyRef = useRef("draft");
   const pendingAssistantDeltasRef = useRef(new Map<string, { delta: string; threadId?: string }>());
   const assistantDeltaFrameRef = useRef<number | null>(null);
@@ -1917,33 +1918,62 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const pending = noteEditsRef.current.get(noteKey);
+    if (pending && pending.state !== "saved") {
+      setNoteLoadedKey(noteKey);
+      setNoteSaveState(pending.state);
+      return;
+    }
     setNoteLoadedKey(null);
     setNoteSaveState("idle");
     void desktopBridge.getWorkbenchNote(noteStorageKey)
       .then((note) => {
-        if (cancelled) return;
+        if (cancelled || noteEditsRef.current.get(noteKey) !== pending) return;
         setNoteValues((current) => ({ ...current, [noteKey]: note.content }));
         setNoteLoadedKey(noteKey);
+        if (note.updatedAt) setNoteSaveState("saved");
       })
       .catch(() => {
-        if (cancelled) return;
-        setNoteValues((current) => ({ ...current, [noteKey]: "" }));
+        if (cancelled || noteEditsRef.current.get(noteKey) !== pending) return;
         setNoteLoadedKey(noteKey);
       });
     return () => { cancelled = true; };
   }, [noteKey, noteStorageKey]);
 
-  useEffect(() => {
-    if (noteLoadedKey !== noteKey) return;
-    const content = noteValues[noteKey] ?? "";
+  function changeWorkbenchNote(ownerKey: string, content: string) {
+    const current = noteEditsRef.current.get(ownerKey);
+    if (current?.timer != null) window.clearTimeout(current.timer);
+    const edit: NonNullable<typeof current> = { content, timer: null, state: "saving" };
+    noteEditsRef.current.set(ownerKey, edit);
+    setNoteValues((notes) => ({ ...notes, [ownerKey]: content }));
     setNoteSaveState("saving");
-    const timer = window.setTimeout(() => {
-      void desktopBridge.saveWorkbenchNote(noteStorageKey, content)
-        .then(() => { if (noteKeyRef.current === noteKey) setNoteSaveState("saved"); })
-        .catch(() => { if (noteKeyRef.current === noteKey) setNoteSaveState("idle"); });
+    function finish(state: "saved" | "idle") {
+      if (noteEditsRef.current.get(ownerKey) !== edit) return;
+      edit.state = state;
+      if (noteKeyRef.current === ownerKey) setNoteSaveState(state);
+    }
+    // The debounce belongs to the note owner and continues after a view switch.
+    edit.timer = window.setTimeout(() => {
+      edit.timer = null;
+      void desktopBridge.saveWorkbenchNote(`owner:${ownerKey}`, content)
+        .then(() => finish("saved"), () => finish("idle"));
     }, 600);
-    return () => window.clearTimeout(timer);
-  }, [noteKey, noteStorageKey, noteLoadedKey, noteValues]);
+  }
+
+  async function moveWorkbenchNote(ownerKey: string, targetKey: string) {
+    const edit = noteEditsRef.current.get(ownerKey);
+    const draft = edit && edit.state !== "saved" ? edit.content : noteValuesRef.current[ownerKey];
+    if (!draft?.trim()) return;
+    try {
+      await desktopBridge.saveWorkbenchNote(`owner:${targetKey}`, draft);
+      if (noteEditsRef.current.get(ownerKey) !== edit) return;
+      if (edit?.timer != null) window.clearTimeout(edit.timer);
+      await desktopBridge.deleteWorkbenchNote(`owner:${ownerKey}`);
+      if (noteEditsRef.current.get(ownerKey) !== edit) return;
+      noteEditsRef.current.delete(ownerKey);
+      setNoteValues((current) => ({ ...current, [targetKey]: draft, [ownerKey]: "" }));
+    } catch { /* Keep the draft so it can be recovered. */ }
+  }
 
   useEffect(() => {
     if (!workbenchActiveTabs.has("changes")) return;
@@ -3017,16 +3047,7 @@ function App() {
       setThreads((current) => [result.thread, ...current.filter((thread) => thread.id !== result.threadId)]);
       setNativeStream((current) => current.threadId === result.threadId ? { threadId: "", events: [] } : current);
       setNativeQuestions((current) => current.filter((item) => item.threadId !== result.threadId));
-      if (submittedThreadId === null) {
-        const draftNote = noteValuesRef.current[ownerKey] ?? "";
-        if (draftNote.trim()) {
-          try {
-            await desktopBridge.saveWorkbenchNote(`owner:${taskDraftKey(resultSelection)}`, draftNote);
-            await desktopBridge.deleteWorkbenchNote(`owner:${ownerKey}`);
-            setNoteValues((current) => ({ ...current, [taskDraftKey(resultSelection)]: draftNote, [ownerKey]: "" }));
-          } catch { /* Keep the draft so it can be recovered. */ }
-        }
-      }
+      if (submittedThreadId === null) await moveWorkbenchNote(ownerKey, taskDraftKey(resultSelection));
       setContextItems((current) => current.filter((item) => !submittedContext.includes(item)), ownerKey);
       if (submittedThreadId === null) moveNewTaskComposer(ownerKey, taskDraftKey(resultSelection));
       const stillViewingSubmittedThread = taskSelectionRef.current.dataRoot === owner.dataRoot
@@ -3929,7 +3950,7 @@ function App() {
               loading={noteLoadedKey !== noteKey}
               saveState={noteSaveState}
               contextLabel={activeThreadId ? t("Conversation notes") : t("New conversation notes")}
-              onChange={(content) => setNoteValues((current) => ({ ...current, [noteKey]: content }))}
+              onChange={(content) => changeWorkbenchNote(noteKey, content)}
               onSend={sendNoteToChat}
             />,
             browser: <BrowserView active={workbenchOpen && workbenchActiveTabs.has("browser")} onOpenExternal={(url) => desktopBridge.openExternalUrl(url)} />,

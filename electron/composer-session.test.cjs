@@ -22,7 +22,7 @@ async function callbacks(names, overrides = {}) {
   const composerDrafts = new Map();
   const scope = {
     ...helpers, crypto: global.crypto, t: text => text,
-    composerSessionsRef, composerKeyAliasesRef, queuedPromptScopesRef, noteValuesRef: { current: {} },
+    composerSessionsRef, composerKeyAliasesRef, queuedPromptScopesRef, noteValuesRef: { current: {} }, moveWorkbenchNote() {},
     composerAttachmentOwnersRef: { current: new Map() },
     activeComposerRef: { current: null }, adoptedComposerFocusRef: { current: null },
     readComposerDraft: key => composerDrafts.get(key) ?? null,
