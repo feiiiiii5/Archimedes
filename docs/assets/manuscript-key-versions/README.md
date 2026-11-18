@@ -34,3 +34,21 @@ fixed build (`c8b8e58`) shows and opens the restored `restored.tex` immediately.
 | Before | After |
 | --- | --- |
 | [Stale entry in expanded folder](source-tree-before.png) | [Restored section visible in the same folder](source-tree-after.png) |
+
+## Recover after restarting with no manuscript files
+
+Both production Electron builds saved **Validated optics results** through the
+Writing dialog, then quit. The sample manuscript directory was moved out of
+the execution folder while the app was closed. Both captures show the same
+freshly opened Writing chooser at 1,180 × 900 in Charcoal.
+
+| Before (`049b3b2`) | After (`97b5a88`) |
+| --- | --- |
+| ![The empty chooser has no path to saved versions](reopen-before.png) | ![Key versions is available in the empty chooser](reopen-after.png) |
+
+In the fixed build, choosing **Key versions** reveals the saved name and
+`paper/main.tex`. The comparison shows the three missing files. After restore,
+Writing opens the main file and the main file, section, and bibliography on
+disk match their original contents.
+
+![The saved version can restore all three missing files](reopen-comparison.png)
