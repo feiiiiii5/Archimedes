@@ -7,9 +7,9 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
 function extract(name) {
   const start = source.search(new RegExp(`^  (?:async )?function ${name}\\(`, 'm'));
   assert.ok(start >= 0, name);
-  const end = source.slice(start + 1).search(/^  (?:async )?function /m);
-  assert.ok(end >= 0, `next function after ${name}`);
-  return source.slice(start, start + 1 + end);
+  const end = source.slice(start + 1).search(/^  }$/m);
+  assert.ok(end >= 0, `end of ${name}`);
+  return source.slice(start, start + 1 + end + 3);
 }
 const owner = project => ({ dataRoot: '/data', projectId: project, workspaceId: `ws-${project}`, threadId: project, executionRoot: `/physical/${project}` });
 const thread = (id, project = id) => ({ id, project_id: project, workspace_id: `ws-${project}`, workspace_path: `/physical/${project}`, messages: [], events: [], turns: [], changeSets: [] });
@@ -127,6 +127,46 @@ test('a newly created session receives later text, attachments and queued follow
   assert.equal(h.state.sessions[h.key('b')].items[0].id, 'b-file');
   assert.equal(queuedPromptScopesRef.current[h.threadKey('created-a', 'a')][0].draft, 'A queued');
   assert.equal(queuedPromptScopesRef.current.b[0].draft, 'B queued');
+});
+
+test('pending notes save to their own draft after switching, and adoption retires the old timer', async () => {
+  const callbacksByTimer = new Map();
+  const noteKeyRef = { current: 'draft-a' };
+  const noteEditsRef = { current: new Map() };
+  const notesOnDisk = new Map();
+  let timer = 0, saveState;
+  const h = await callbacks(['changeWorkbenchNote', 'moveWorkbenchNote'], {
+    window: {
+      setTimeout(callback, delay) {
+        assert.equal(delay, 600);
+        callbacksByTimer.set(++timer, callback);
+        return timer;
+      },
+      clearTimeout(handle) { callbacksByTimer.delete(handle); },
+    },
+    noteKeyRef, noteEditsRef,
+    setNoteValues() {}, setNoteSaveState(value) { saveState = value; },
+    desktopBridge: {
+      saveWorkbenchNote: async (key, content) => { notesOnDisk.set(key, content); },
+      deleteWorkbenchNote: async key => { notesOnDisk.delete(key); },
+    },
+  });
+  h.changeWorkbenchNote('draft-a', 'First A edit');
+  h.changeWorkbenchNote('draft-a', 'Latest A note');
+  noteKeyRef.current = 'draft-b';
+  h.changeWorkbenchNote('draft-b', 'B note');
+
+  assert.deepEqual([...callbacksByTimer.keys()], [2, 3]);
+  const saveA = callbacksByTimer.get(2);
+  callbacksByTimer.delete(2);
+  saveA();
+  await Promise.resolve();
+  assert.deepEqual([...notesOnDisk], [['owner:draft-a', 'Latest A note']]);
+  assert.equal(saveState, 'saving', "A's completion does not set B's saved indicator");
+
+  await h.moveWorkbenchNote('draft-b', 'thread-b');
+  assert.deepEqual([...notesOnDisk], [['owner:draft-a', 'Latest A note'], ['owner:thread-b', 'B note']]);
+  assert.equal(callbacksByTimer.size, 0, 'adoption retires the provisional timer');
 });
 
 test('the same imported cloud thread in different data folders cannot share text, attachments or pending handoffs', async () => {
