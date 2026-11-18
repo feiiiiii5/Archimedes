@@ -561,7 +561,7 @@ function parseArguments(serialized) {
   catch { throw new Error("The model returned invalid tool arguments."); }
 }
 
-async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, contextItems, foundPapers, pdfCache, signal, capabilities = DEFAULT_CAPABILITIES, browser, config, recordEvent = () => {}, registry = defaultToolRegistry, researchRun, reasoningEffort, dataStore = defaultStore.currentStore() }, args) {
+async function executeBuiltInTool({ root, repositoryWorkspace = root, taskId, threadId, turnId, call, emit, contextItems, foundPapers, pdfCache, signal, capabilities = DEFAULT_CAPABILITIES, browser, config, recordEvent = () => {}, registry = defaultToolRegistry, researchRun, reasoningEffort, dataStore = defaultStore.currentStore() }, args) {
   const store = dataStore;
   const name = call.function.name;
 
@@ -608,7 +608,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
         if (!message.tool_calls.length) { response = message.content || ""; break; }
         for (const child of message.tool_calls) {
           try {
-            const result = await executeTool({ root, taskId, threadId, turnId, call: child, emit, contextItems, foundPapers, pdfCache, signal, capabilities, browser, config, recordEvent: workerRecord, registry, researchRun, dataStore, preflight: (toolName, toolArgs) => {
+            const result = await executeTool({ root, repositoryWorkspace, taskId, threadId, turnId, call: child, emit, contextItems, foundPapers, pdfCache, signal, capabilities, browser, config, recordEvent: workerRecord, registry, researchRun, dataStore, preflight: (toolName, toolArgs) => {
               if (!allowed.has(toolName)) throw new Error("Tool unavailable in isolated phase.");
               if ((toolName === "write_artifact" || toolName === "edit_workspace_file") && !outputs.includes(String(toolArgs.path || "").replaceAll("\\", "/"))) throw new Error("The file was not declared as a phase output.");
             } });
@@ -715,7 +715,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "list_attached_repository_files") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (repository.checkout) {
-      const listing = await listRepositoryCheckoutDirectory(root, repository.url, args.directory || "", checkoutBranchOf(repository));
+      const listing = await listRepositoryCheckoutDirectory(repositoryWorkspace, repository.url, args.directory || "", checkoutBranchOf(repository));
       return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit, ...listing }) };
     }
     return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.branch,
@@ -726,7 +726,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "read_attached_repository_file") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (repository.checkout) {
-      const file = await readRepositoryCheckoutFile(root, repository.url, args.path, checkoutBranchOf(repository));
+      const file = await readRepositoryCheckoutFile(repositoryWorkspace, repository.url, args.path, checkoutBranchOf(repository));
       return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit,
         path: file.path, line_count: file.line_count, size_bytes: file.size, content: file.content,
       }) };
@@ -740,7 +740,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "search_attached_repository") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (!repository.checkout) throw new Error("Full repository search is available after the user starts a code audit checkout.");
-    const result = await searchRepositoryCheckout(root, repository.url, args.query, args.directory || "", checkoutBranchOf(repository));
+    const result = await searchRepositoryCheckout(repositoryWorkspace, repository.url, args.query, args.directory || "", checkoutBranchOf(repository));
     return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit, ...result }) };
   }
   if (name === "read_attached_paper_pdf") {
@@ -1147,7 +1147,7 @@ async function runAgentInStore({ prompt, workspace, threadId, projectId, workspa
 
       for (const call of message.tool_calls) {
         try {
-          const result = await executeTool({ root: workspace, taskId: task.id, threadId: thread.id, turnId: turn.id, call, emit: emitTurn, contextItems, foundPapers, pdfCache, signal: controller.signal, capabilities: turnCapabilities, browser, config, recordEvent, registry: toolRegistry, researchRun, dataStore, reasoningEffort: resolvedReasoningEffort, preflight: (name, args) => {
+          const result = await executeTool({ root: workspace, repositoryWorkspace: origin === "paper" ? dataStore.workspace : workspace, taskId: task.id, threadId: thread.id, turnId: turn.id, call, emit: emitTurn, contextItems, foundPapers, pdfCache, signal: controller.signal, capabilities: turnCapabilities, browser, config, recordEvent, registry: toolRegistry, researchRun, dataStore, reasoningEffort: resolvedReasoningEffort, preflight: (name, args) => {
             if (name === "search_academic_papers") {
               if (academicSearches >= policy.maxAcademicSearches) throw new Error("The academic search budget is exhausted. Synthesize the findings already collected.");
               academicSearches += 1;

@@ -31,7 +31,7 @@ before(async () => {
     const result = new Function(...Object.keys(scope), `${code.replace(/^export \{\};?$/gm, "")}\nreturn {${names.join(",")}};`)(...Object.values(scope));
     Object.assign(scope, result); return result;
   }
-  helpers = await load("library-workspace-state.ts", ["libraryDocumentKey", "matchLibraryPaper", "sortLibraryPapers", "uniqueLibraryPapers", "createLibraryRequestQueue"]);
+  helpers = await load("library-workspace-state.ts", ["libraryDocumentKey", "matchLibraryPaper", "sortLibraryPapers", "uniqueLibraryPapers", "createLibraryRequestQueue", "paperChatExecutionRoot"]);
   ({ LibraryPaperNotes: Notes } = await load("LibraryPaperNotes.tsx", ["LibraryPaperNotes"]));
   ({ LibraryWorkspace: Workspace } = await load("LibraryWorkspace.tsx", ["LibraryWorkspace"]));
 });
@@ -58,7 +58,7 @@ function fixture(count = 3) {
 async function mount(bridge, overrides = {}) {
   const root = createRoot(document.getElementById("root"));
   const props = {
-    bridge, projectId: "project1", active: true, refreshVersion: 0,
+    bridge, executionWorkspace: "/execution/project1", projectId: "project1", active: true, refreshVersion: 0,
     renderReader: ({ paper, onActivityChange }) => React.createElement("div", { "data-reader": paper.id }, [React.createElement("button", { key: "start", onClick: () => onActivityChange(true) }, "Start task"), React.createElement("button", { key: "stop", onClick: () => onActivityChange(false) }, "Stop task")]),
     renderInspector: ({ paper, onUpdate, onRemove }) => React.createElement("aside", { "data-inspector": paper.id }, [React.createElement("button", { key: "star", onClick: () => onUpdate({ starred: !paper.starred }) }, "Toggle star"), React.createElement("button", { key: "remove", onClick: onRemove }, "Remove membership")]),
     renderEditor: () => null, renderImport: () => null, ...overrides,
@@ -189,6 +189,49 @@ test("metadata queue bounds concurrency, continues after errors and cancels queu
   assert.equal(peak, 2);
   const settled = await results;
   assert.equal(settled.filter((result) => result.status === "rejected").length, 3);
+});
+
+test("the paper reader receives the current execution folder separately from the data root", async () => {
+  const data = fixture(1);
+  const seen = [];
+  const ui = await mount(data.bridge, {
+    executionWorkspace: "/execution/current",
+    renderReader: ({ paper, executionWorkspace }) => {
+      seen.push(executionWorkspace);
+      return React.createElement("div", { "data-reader": paper.id });
+    },
+  });
+  await click(".library-tree-paper");
+  assert.equal(seen.at(-1), "/execution/current");
+  await ui.render({ executionWorkspace: "/execution/updated" });
+  assert.equal(seen.at(-1), "/execution/updated");
+  await ui.unmount();
+});
+
+test("a started paper chat keeps its historical execution root while a new chat follows the project default", () => {
+  assert.equal(helpers.paperChatExecutionRoot("/execution/new", undefined, null), "/execution/new");
+  assert.equal(helpers.paperChatExecutionRoot("/execution/new", "thread-1", null), "/execution/new");
+  assert.equal(helpers.paperChatExecutionRoot("/execution/new", "thread-1", "/execution/old"), "/execution/old");
+});
+
+test("paper chat uses the data root for library data and the execution root for model runs", () => {
+  const source = (file) => fs.readFileSync(path.join(__dirname, "..", "src", file), "utf8");
+  const app = source("App.tsx");
+  const library = source("LibraryView.tsx");
+  const workspace = source("LibraryWorkspace.tsx");
+  assert.match(app, /library: <LibraryView[^>]*workspace=\{workspace\}[^>]*executionWorkspace=\{executionWorkspace\}/);
+  assert.match(library, /<LibraryWorkspace[\s\S]*?executionWorkspace=\{executionWorkspace\}/);
+  assert.match(library, /<PaperReadingWorkbench \{\.\.\.readerProps\}[^>]*workspace=\{workspace\}/);
+  assert.match(library, /function PaperReadingWorkbench\(\{[^}]*executionWorkspace/);
+  assert.match(workspace, /renderReader\(\{[\s\S]*?noteDrafts: drafts\.current, executionWorkspace \}\)/);
+  assert.match(workspace, /type ReaderProps = \{[\s\S]*?executionWorkspace: string;/);
+  assert.match(library, /getLibraryPaperReader\(paper\.id, workspace, projectId\)/);
+  assert.match(library, /prepareLibraryPaperReader\(paper\.id, workspace, projectId\)/);
+  assert.match(library, /getLibraryGithubRepositoryCheckout\(projectUrl, workspace\)/);
+  assert.match(library, /paperChatExecutionRoot\(executionWorkspace, chatThreadId, chatThreadWorkspaceRef\.current\)/);
+  assert.match(library, /bridge\.runAgent\(\{[\s\S]*?workspace: executionRoot,/);
+  assert.match(library, /chatThreadWorkspaceRef\.current = thread\.workspace_path \|\| null/);
+  assert.match(library, /chatThreadWorkspaceRef\.current = result\.thread\.workspace_path \|\| executionRoot/);
 });
 
 test("search keeps a pasted title together, includes tags, and sorting leaves cache order intact", () => {

@@ -20,9 +20,11 @@ type ReaderProps = {
   onSessionSave: (session: PaperReaderSession) => void;
   onActivityChange: (busy: boolean) => void;
   noteDrafts: LibraryNoteDrafts;
+  executionWorkspace: string;
 };
 type Props = {
   bridge: ResearchDeskBridge;
+  executionWorkspace: string;
   projectId?: string | null;
   active: boolean;
   refreshVersion: number;
@@ -34,7 +36,7 @@ type Props = {
   renderImport: (props: { library: ResearchLibrary; open: boolean; onClose: () => void; onImport: (paper: AcademicSearchResult) => Promise<void>; onLocalImported: () => Promise<void> }) => ReactNode;
 };
 
-export default function LibraryWorkspace({ bridge, projectId, active, refreshVersion, onLibraryImported, onOpenProject, renderReader, renderInspector, renderEditor, renderImport }: Props) {
+export default function LibraryWorkspace({ bridge, executionWorkspace, projectId, active, refreshVersion, onLibraryImported, onOpenProject, renderReader, renderInspector, renderEditor, renderImport }: Props) {
   const { t } = useUISettings();
   const confirm = useConfirm();
   const [libraries, setLibraries] = useState<ResearchLibrary[]>([]);
@@ -322,7 +324,7 @@ export default function LibraryWorkspace({ bridge, projectId, active, refreshVer
       </div>
       {(error || notice) && <div className="library-workspace-notices"><InlineNotice tone={error ? "danger" : "info"}>{error || notice}</InlineNotice><button className="icon-button" aria-label={t("Dismiss notice")} onClick={() => { setError(""); setNotice(""); }}><X size={14} /></button></div>}
       {currentDocument && documentPaper && documentLibrary ? <div className="library-document-content" key={libraryDocumentKey(currentDocument)}>
-        {currentDocument.kind === "notes" ? <LibraryPaperNotes key={documentPaper.id} paper={documentPaper} drafts={drafts.current} onSave={(notes) => updatePaper(documentPaper.id, { notes })} /> : renderReader({ paper: documentPaper, library: documentLibrary, onBack: () => browse(documentLibrary.id), onUpdate: (patch) => updatePaper(documentPaper.id, patch), session: sessions.current.get(documentPaper.id), onSessionSave: (session) => { sessions.current.set(documentPaper.id, session); }, onActivityChange: setReaderBusy, noteDrafts: drafts.current })}
+        {currentDocument.kind === "notes" ? <LibraryPaperNotes key={documentPaper.id} paper={documentPaper} drafts={drafts.current} onSave={(notes) => updatePaper(documentPaper.id, { notes })} /> : renderReader({ paper: documentPaper, library: documentLibrary, onBack: () => browse(documentLibrary.id), onUpdate: (patch) => updatePaper(documentPaper.id, patch), session: sessions.current.get(documentPaper.id), onSessionSave: (session) => { sessions.current.set(documentPaper.id, session); }, onActivityChange: setReaderBusy, noteDrafts: drafts.current, executionWorkspace })}
       </div> : <div className="library-browser">
         <header className="library-browser-header"><div><h1>{library?.name || t(scope === "all" ? "All papers" : "Library")}</h1><p>{library?.description || t("Your papers and reading notes, organised by research topic.")}</p></div>{!scope && <button className="secondary-button" onClick={() => setEditor("new")}><FolderPlus size={15} />{t("New folder")}</button>}{library && <button className="icon-button" ref={menuRef} onClick={() => setMenuLibrary(library)} aria-label={t("Folder actions for {name}", { name: library.name })}><MoreHorizontal size={17} /></button>}</header>
         {!scope && !query.trim() ? <div className="library-overview">

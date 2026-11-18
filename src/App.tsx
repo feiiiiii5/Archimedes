@@ -1,4 +1,4 @@
-import { appendComposerText, getComposerSession, updateComposerSession, type ComposerRequest, type ComposerSessions } from "./composer-session";
+import { appendComposerText, getComposerSession, resolveComposerKey, updateComposerSession, type ComposerKeyAliases, type ComposerRequest, type ComposerSessions } from "./composer-session";
 import { newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -1500,21 +1500,35 @@ function App() {
   const [queuedPromptScopes, setQueuedPromptScopes] = useState<Record<string, QueuedPrompt[]>>({});
   const queuedPromptScopesRef = useRef(queuedPromptScopes);
   function updateQueuedPrompts(key: string, update: QueuedPrompt[] | ((current: QueuedPrompt[]) => QueuedPrompt[])) {
-    const current = queuedPromptScopesRef.current[key] ?? [];
-    queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [key]: typeof update === "function" ? update(current) : update };
+    const resolvedKey = resolveComposerKey(composerKeyAliasesRef.current, key);
+    const current = queuedPromptScopesRef.current[resolvedKey] ?? [];
+    queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [resolvedKey]: typeof update === "function" ? update(current) : update };
     setQueuedPromptScopes(queuedPromptScopesRef.current);
   }
   const [composerSessions, setComposerSessions] = useState<ComposerSessions<ContextAttachment>>({});
   const composerSessionsRef = useRef(composerSessions);
+  // A submitted draft key stays reachable until the user starts another draft
+  // there, so attachment callbacks that resolve after the thread is created
+  // still land in that thread instead of a drained temporary composer.
+  const composerKeyAliasesRef = useRef<ComposerKeyAliases>({});
+  const composerAttachmentOwnersRef = useRef(new Map<string, { key: string }>());
   const composerSession = getComposerSession(composerSessions, composerDraftKey);
   const contextItems = composerSession.items;
   const composerRequest = composerSession.request;
   function updateComposer(key: string, update: (session: ReturnType<typeof getComposerSession<ContextAttachment>>) => ReturnType<typeof getComposerSession<ContextAttachment>>) {
-    composerSessionsRef.current = updateComposerSession(composerSessionsRef.current, key, update);
+    composerSessionsRef.current = updateComposerSession(composerSessionsRef.current, resolveComposerKey(composerKeyAliasesRef.current, key), update);
     setComposerSessions(composerSessionsRef.current);
   }
   function setContextItems(update: (items: ContextAttachment[]) => ContextAttachment[], key = composerDraftKey) {
     updateComposer(key, (session) => ({ ...session, items: update(session.items) }));
+  }
+  function composerAttachmentCallback(key: string) {
+    const owner = composerAttachmentOwnersRef.current.get(key) ?? { key };
+    composerAttachmentOwnersRef.current.set(key, owner);
+    return (added: ContextAttachment[]) => setContextItems(
+      (current) => [...current, ...added.filter((item) => !current.some((candidate) => candidate.id === item.id))].slice(0, 12),
+      owner.key,
+    );
   }
   function setComposerRequest(request: ComposerRequest | null | ((current: ComposerRequest | null) => ComposerRequest | null), key = composerDraftKey) {
     updateComposer(key, (session) => ({ ...session, request: typeof request === "function" ? request(session.request) : request }));
@@ -1541,10 +1555,7 @@ function App() {
   const [projectFolderError, setProjectFolderError] = useState("");
   const [projectToRemove, setProjectToRemove] = useState<ResearchProject | null>(null);
   const [fileName, setFileName] = useState("");
-  const [fileDrafts, setFileDrafts] = useState<Record<string, FileDraft>>({});
-  const [fileSaving, setFileSaving] = useState<Set<string>>(new Set());
-  const [fileConflicts, setFileConflicts] = useState<Record<string, string>>({});
-  const [fileErrors, setFileErrors] = useState<Record<string, string>>({});
+  const [fileEditorScopes, setFileEditorScopes] = useState<FileEditorScopes>({});
   const activeThreadIdRef = useRef<string | null>(null);
   const threadOpenRequestRef = useRef(0);
   const openFilesRef = useRef<WorkspaceFilePreview[]>([]);
@@ -1609,6 +1620,9 @@ function App() {
   const fileWorkspaceVersionRef = useRef(0);
   if (executionWorkspaceRef.current !== executionWorkspace) fileWorkspaceVersionRef.current += 1;
   executionWorkspaceRef.current = executionWorkspace;
+  const fileWorkspaceVersion = fileWorkspaceVersionRef.current;
+  const fileEditorScope = getFileEditorScope(fileEditorScopes, executionWorkspace);
+  const { drafts: fileDrafts, saving: fileSaving, conflicts: fileConflicts, errors: fileErrors } = fileEditorScope;
   const noteStorageKey = `owner:${composerDraftKey}`;
   const noteKey = composerDraftKey;
   const noteValue = noteLoadedKey === noteKey ? noteValues[noteKey] ?? "" : "";
@@ -1938,6 +1952,14 @@ function App() {
   }, [activeThreadId, artifactsVersion, workbenchOpen, workbenchActiveTabs]);
 
   function applyTaskSelection(next: TaskSelection) {
+    // Selecting a fresh draft at this key makes its composer authoritative
+    // again; otherwise the previous thread would keep receiving its updates.
+    const key = taskDraftKey(next);
+    if (composerKeyAliasesRef.current[key]) {
+      const remaining = { ...composerKeyAliasesRef.current };
+      delete remaining[key];
+      composerKeyAliasesRef.current = remaining;
+    }
     taskSelectionRef.current = next;
     activeThreadIdRef.current = next.threadId;
     setTaskSelection(next);
@@ -2016,6 +2038,16 @@ function App() {
     updateComposer(ownerKey, (current) => ({ ...current, items: [], request: null }));
     updateQueuedPrompts(targetKey, (current) => [...current, ...(queuedPromptScopesRef.current[ownerKey] ?? [])]);
     updateQueuedPrompts(ownerKey, []);
+    // Attachment callbacks started before this move may resolve later with the
+    // old draft key. Let them reach the session that now owns that draft.
+    composerKeyAliasesRef.current = { ...composerKeyAliasesRef.current, [ownerKey]: targetKey };
+    // A new draft can reuse ownerKey before an earlier attachment finishes.
+    // Keep that callback bound to the moved owner even after the alias clears.
+    const attachmentOwner = composerAttachmentOwnersRef.current.get(ownerKey);
+    if (attachmentOwner) {
+      attachmentOwner.key = targetKey;
+      composerAttachmentOwnersRef.current.delete(ownerKey);
+    }
   }
 
   function queueComposerText(key: string, text: string, mode: "append" | "replace" = "append") {
@@ -2551,7 +2583,9 @@ function App() {
     if (dataFolderLoadingRef.current) return;
     threadOpenRequestRef.current += 1;
     const project = availableProjects.find((entry) => entry.id === projectId) ?? null;
-    applyTaskSelection(newTaskSelection(dataRoot, project, availableWorkspaces, workspaceId));
+    const next = newTaskSelection(dataRoot, project, availableWorkspaces, workspaceId);
+    if (activeRunRef.current?.ownerKey === taskDraftKey(next)) return;
+    applyTaskSelection(next);
     setMainSection("chat");
     clearPendingAssistantDeltas();
     setBoundHarness(null);
@@ -2643,7 +2677,11 @@ function App() {
   }
 
   async function selectProject(projectId: string) {
-    if (projectId === taskSelectionRef.current.projectId) return;
+    if (dataFolderLoadingRef.current) return;
+    if (projectId === taskSelectionRef.current.projectId) {
+      threadOpenRequestRef.current += 1;
+      return;
+    }
     const project = projects.find((entry) => entry.id === projectId);
     if (!project) return;
     const next = threads.find((thread) => thread.project_id === projectId);
@@ -2695,7 +2733,11 @@ function App() {
   }
 
   async function selectWorkspace(workspaceToOpen: ProjectWorkspace) {
-    if (workspaceToOpen.id === taskSelectionRef.current.workspaceId) return;
+    if (dataFolderLoadingRef.current) return;
+    if (workspaceToOpen.id === taskSelectionRef.current.workspaceId) {
+      threadOpenRequestRef.current += 1;
+      return;
+    }
     const next = threads.find((thread) => thread.workspace_id === workspaceToOpen.id && thread.project_id === workspaceToOpen.project_id);
     if (next) await openResearchThread(next);
     else startNewTask(workspaceToOpen.project_id, workspaceToOpen.id, projects, [...workspaces.filter((entry) => entry.id !== workspaceToOpen.id), workspaceToOpen]);
@@ -2823,6 +2865,12 @@ function App() {
       setWorkspaces((current) => current.map((entry) => entry.project_id === updated.id && entry.is_default
         ? { ...entry, root: updated.workspace_path || entry.root }
         : entry));
+      const selectedTask = taskSelectionRef.current;
+      const defaultSpace = workspaces.find(entry => entry.project_id === updated.id && entry.is_default);
+      if (selectedTask.dataRoot === workspace && selectedTask.projectId === updated.id && !selectedTask.threadId
+        && (!selectedTask.workspaceId || selectedTask.workspaceId === defaultSpace?.id)) {
+        applyTaskSelection({ ...selectedTask, executionRoot: updated.workspace_path || selectedTask.dataRoot });
+      }
       setProjectFolderError("");
     } catch (error) {
       setProjectFolderError(error instanceof Error ? error.message : String(error));
@@ -3498,7 +3546,7 @@ function App() {
   // mount gating (keepMounted · cacheClass · requiresWorkspace · open gate)
   // comes from the module registry, not from scattered conditions.
   const sidebarModuleContent: Record<string, ReactNode> = {
-    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
+    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={executionWorkspace} workspaceId={activeWorkspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
     news: <NewsView chatTargetLabel={activeThread?.title || t("New conversation")} bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
@@ -3695,7 +3743,7 @@ function App() {
               contextLength={contextLength}
               modelCapabilities={modelCapabilities}
               contextItems={contextItems}
-              onAddContext={(added) => setContextItems((current) => [...current, ...added.filter((item) => !current.some((candidate) => candidate.id === item.id))].slice(0, 12))}
+              onAddContext={composerAttachmentCallback(composerDraftKey)}
               onRemoveContext={(id) => setContextItems((current) => current.filter((item) => item.id !== id))}
               onApprove={() => void approvePendingAction()}
               onReject={() => void rejectPendingAction()}
