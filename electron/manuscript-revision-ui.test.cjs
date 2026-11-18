@@ -45,7 +45,7 @@ async function fixture(t) {
   return { ...task, scope, database, project, workspace, root, dataRoot, oldRoot, newRoot, origin, selection, drafts, contexts, sent, shown };
 }
 
-test("actual App revision keeps a private source separate from project-visible drafts and reuses the private session", async (t) => {
+test("owner-only review feedback stays private after its source is shared, and archived revisions are replaced", async (t) => {
   const f = await fixture(t), open = await actualAppFunction("openManuscriptChat", f.scope);
   const openShared = { ...f.origin, threadId: null };
   await open(openShared, "PROJECT_REVISION_DRAFT", "revision");
@@ -54,14 +54,17 @@ test("actual App revision keeps a private source separate from project-visible d
   f.scope.taskSelectionRef.current = f.selection;
   f.scope.openManuscriptChat = open;
   const revise = await actualAppFunction("draftManuscriptRevision", f.scope);
-  await revise({ id: "reviewed-run", manuscript: f.origin }, [{ text: "Selected feedback", page: 3, quote: "Original evidence", severity: "major" }]);
+  f.database.setResearchThreadVisibility(f.selection.threadId, "project");
+  const sharedSource = f.database.getResearchThread(f.selection.threadId);
+  const privateReceipt = { ...f.origin, privateOwnerId: sharedSource.owner_id };
+  await revise({ id: "reviewed-run", manuscript: privateReceipt }, [{ text: "Selected feedback", page: 3, quote: "Original evidence", severity: "major" }]);
   const first = f.scope.taskSelectionRef.current, key = f.taskDraftKey(first), thread = f.database.getResearchThread(first.threadId);
   assert.equal(first.executionRoot, f.oldRoot); assert.notEqual(first.threadId, f.selection.threadId); assert.equal(thread.based_on_thread_id, f.selection.threadId); assert.equal(thread.turns.length, 0);
   assert.equal(thread.visibility, "private");
   assert.notEqual(first.threadId, shared.threadId);
   assert.equal(f.drafts.get(f.taskDraftKey(shared)).text, "PROJECT_REVISION_DRAFT");
   f.drafts.set(key, { text: "USER_REVISION_NOTES\n" + f.drafts.get(key).text });
-  await open(f.origin, "A second selected finding", "revision");
+  await open(privateReceipt, "A second selected finding", "revision");
   assert.equal(f.scope.taskSelectionRef.current.threadId, first.threadId);
   assert.match(f.drafts.get(key).text, /^USER_REVISION_NOTES/); assert.match(f.drafts.get(key).text, /A second selected finding/);
   assert.equal(f.drafts.get(f.taskDraftKey(f.selection)).text, "ORIGINAL_UNSENT_PLAN");
@@ -75,4 +78,14 @@ test("actual App revision keeps a private source separate from project-visible d
   assert.equal(f.scope.taskSelectionRef.current.executionRoot, f.oldRoot);
   assert.equal(opened[0].path, "paper/section.tex");
   assert.equal(f.contexts.get(key).length, 1); assert.ok(f.contexts.get(key)[0].path.startsWith(f.oldRoot + path.sep));
+
+  f.database.archiveResearchThread(first.threadId);
+  await open(privateReceipt, "A finding after archiving", "revision");
+  const replacement = f.scope.taskSelectionRef.current;
+  assert.notEqual(replacement.threadId, first.threadId);
+  const replacementThread = f.database.getResearchThread(replacement.threadId);
+  assert.equal(replacementThread.archived_at, null);
+  assert.equal(replacementThread.visibility, "private");
+  assert.equal(f.drafts.get(f.taskDraftKey(replacement)).text, "A finding after archiving");
+  assert.match(f.drafts.get(key).text, /^USER_REVISION_NOTES/);
 });

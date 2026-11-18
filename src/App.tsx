@@ -3152,7 +3152,7 @@ function App() {
     const origin = taskSelectionRef.current;
     const originKey = taskDraftKey(origin);
     const sourceThread = source.threadId ? await desktopBridge.getResearchThread(source.threadId, source.dataRoot) : null;
-    const visibility = threadVisibility === "private" || sourceThread?.visibility === "private" ? "private" : "project";
+    const visibility = source.privateOwnerId || threadVisibility === "private" || sourceThread?.visibility === "private" ? "private" : "project";
     const privateScope = visibility === "private" ? [visibility, source.threadId || origin.threadId] : [];
     const cacheKey = `archimedes-manuscript-chat:${JSON.stringify([source.dataRoot, source.projectId, source.workspaceId, source.workspace, source.mainPath, kind, ...privateScope])}`;
     let pending = manuscriptChatsRef.current.get(cacheKey);
@@ -3163,7 +3163,7 @@ function App() {
         if (stored) {
           try {
             const thread = await desktopBridge.getResearchThread(stored, source.dataRoot);
-            if (thread.visibility === visibility) return thread;
+            if (!thread.archived_at && thread.visibility === visibility) return thread;
           }
           catch (reason) { if (!/not found|no longer exists/i.test(String(reason))) throw reason; }
         }
