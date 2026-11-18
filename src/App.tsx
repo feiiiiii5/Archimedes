@@ -291,8 +291,10 @@ function writeComposerDraft(key: string, draft: ComposerDraft | null) {
     const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`;
     if (!draft) window.localStorage.removeItem(storageKey);
     else window.localStorage.setItem(storageKey, JSON.stringify(draft));
+    return true;
   } catch {
     // Drafts are a convenience; storage failures must not block sending.
+    return false;
   }
 }
 
@@ -1411,6 +1413,7 @@ function App() {
   const [trajectoryEvents, setTrajectoryEvents] = useState<ResearchEvent[]>([]);
   const [workspace, setWorkspace] = useState(DEFAULT_WORKSPACE);
   const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [workspaceOpenError, setWorkspaceOpenError] = useState("");
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [archivedProjects, setArchivedProjects] = useState<ResearchProject[]>([]);
   const [threads, setThreads] = useState<ResearchThread[]>([]);
@@ -1424,6 +1427,8 @@ function App() {
   const activeRunRef = useRef<{ id: string; ownerKey: string; selection: TaskSelection; threadId: string | null; pendingAction?: PendingAction | null; finished?: boolean } | null>(null);
   const [runningOwnerKey, setRunningOwnerKey] = useState<string | null>(null);
   const composerDraftKey = taskDraftKey(taskSelection);
+  const activeComposerRef = useRef<HTMLTextAreaElement>(null);
+  const adoptedComposerFocusRef = useRef<string | null>(null);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceDialog, setWorkspaceDialog] = useState<
     | { mode: "create"; projectId: string; kind: ProjectWorkspaceKind }
@@ -2031,13 +2036,21 @@ function App() {
 
   function moveNewTaskComposer(ownerKey: string, targetKey: string) {
     if (ownerKey === targetKey) return;
-    const draft = readComposerDraft(ownerKey);
+    const activeKey = taskDraftKey(taskSelectionRef.current);
+    const field = activeKey === ownerKey ? activeComposerRef.current : null;
+    if (field?.matches(":focus")) adoptedComposerFocusRef.current = targetKey;
+    const stored = readComposerDraft(ownerKey);
+    const draft = stored && field ? { ...stored, text: field.value, selectionStart: field.selectionStart, selectionEnd: field.selectionEnd } : stored;
     if (draft) {
-      const target = readComposerDraft(targetKey);
-      const text = target?.text ? appendComposerText(target.text, draft.text) : draft.text;
-      if (taskDraftKey(taskSelectionRef.current) === targetKey) queueComposerText(targetKey, draft.text);
-      else writeComposerDraft(targetKey, { ...draft, text, selectionStart: text.length, selectionEnd: text.length });
-      writeComposerDraft(ownerKey, null);
+      if (activeKey === targetKey) {
+        queueComposerText(targetKey, draft.text);
+        writeComposerDraft(ownerKey, null);
+      } else {
+        const target = readComposerDraft(targetKey);
+        const text = target?.text ? appendComposerText(target.text, draft.text) : draft.text;
+        const moved = target?.text ? { ...draft, text, selectionStart: text.length, selectionEnd: text.length } : draft;
+        if (writeComposerDraft(targetKey, moved)) writeComposerDraft(ownerKey, null);
+      }
     }
     const source = getComposerSession(composerSessionsRef.current, ownerKey);
     updateComposer(targetKey, (target) => ({ ...target, items: [...target.items, ...source.items.filter((item) => !target.items.some((candidate) => candidate.id === item.id))].slice(0, 12), request: source.request && target.request ? { ...target.request, text: appendComposerText(target.request.text, source.request.text) } : source.request ?? target.request }));
@@ -2469,9 +2482,12 @@ function App() {
     if (hasDirtyFileEditorScopes(fileEditorScopesRef.current) && !(await confirm({ title: "Discard unsaved changes?", description: "Artifact changes that have not been saved will be lost.", confirmLabel: "Discard changes", destructive: true }))) return;
     const requestId = ++threadOpenRequestRef.current;
     dataFolderLoadingRef.current = true;
-    setWorkspaceReady(false);
+    let opened = false;
     try {
       const snapshot = await desktopBridge.openWorkspace(workspacePath);
+      opened = true;
+      setWorkspaceOpenError("");
+      setWorkspaceReady(false);
       const knownProjects = new Set((snapshot.projects ?? []).map((project) => project.id));
       const rememberedProject = readPreferredProject(snapshot.workspace);
       let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
@@ -2523,10 +2539,15 @@ function App() {
       replaceFileEditorScopes({});
       setSelectionError(openingError);
     } catch (error) {
-      if (requestId === threadOpenRequestRef.current) setSelectionError(`${t("Could not open the data folder.")} ${String(error)}`);
+      if (requestId !== threadOpenRequestRef.current) return;
+      if (opened) setSelectionError(`${t("Could not open the data folder.")} ${String(error)}`);
+      else {
+        const message = error instanceof Error ? error.message : String(error);
+        setWorkspaceOpenError(message.replace(/^Error invoking remote method '[^']+':\s*/i, "").replace(/^Error:\s*/i, ""));
+      }
     } finally {
       dataFolderLoadingRef.current = false;
-      if (requestId === threadOpenRequestRef.current) setWorkspaceReady(true);
+      if (opened && requestId === threadOpenRequestRef.current) setWorkspaceReady(true);
     }
   }
 
@@ -3751,6 +3772,7 @@ function App() {
           </div>
         </header>
 
+        {selectionError && <div className="task-selection-error" role="alert">{selectionError}</div>}
         <div className="main-workspace" ref={mainWorkspaceRef}>
         <div className={mainSection === "chat" ? `main-view chat-main${sideThread ? " has-side-chat" : ""}` : "main-view knowledge-main"}>
           {mainSection === "chat" && (
@@ -3809,6 +3831,8 @@ function App() {
               submitError={composerSession.error}
               composerRequest={composerRequest}
               draftKey={composerDraftKey}
+              activeComposerRef={activeComposerRef}
+              adoptedComposerFocusRef={adoptedComposerFocusRef}
               initialScrollTop={conversationScrollPositionsRef.current.get(conversationScrollKey) ?? null}
               onScrollTop={(top) => conversationScrollPositionsRef.current.set(conversationScrollKey, top)}
               currentFile={selectedFile}
@@ -3817,7 +3841,6 @@ function App() {
             />
           )}
           {sideThread && <div className={mainSection === "chat" ? "side-chat-host" : "side-chat-host hidden"}><SideConversation key={sideThread.id} bridge={desktopBridge} initialThread={sideThread} dataWorkspace={workspace} reasoningEffort={reasoningEffort} contextLength={contextLength} onBusyChange={setSideBusy} onClose={() => setSideThread(null)} onOpenMain={(thread) => { setSideThread(null); void openResearchThread(thread); }} onUpdated={(thread) => { setSideThread((current) => current?.id === thread.id ? thread : current); setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]); }} /></div>}
-          {selectionError && <div className="composer-attachment-error" role="alert">{selectionError}</div>}
           <Suspense fallback={null}>
             {/* View host sidebar-modules: one looping projection, semantics derived from the module registry (keepMounted/cacheClass/requiresWorkspace/open gate). */}
             {(Object.entries(sidebarModuleContent) as [string, ReactNode][]).map(([id, content]) => {
@@ -3992,6 +4015,11 @@ function App() {
         onClose={() => setModal(null)}
         onCreateFile={() => void createFile()}
       />
+      <Dialog open={Boolean(workspaceOpenError)} onClose={() => setWorkspaceOpenError("")} role="alertdialog" size="compact" ariaLabelledBy="workspace-open-error-heading" ariaDescribedBy="workspace-open-error-message">
+        <header className="app-dialog-header"><h2 id="workspace-open-error-heading">{t("Unable to open workspace")}</h2></header>
+        <div className="app-dialog-body" id="workspace-open-error-message">{t(workspaceOpenError)}</div>
+        <footer className="app-dialog-footer"><button className="primary-button" onClick={() => setWorkspaceOpenError("")}>{t("Close")}</button></footer>
+      </Dialog>
       <TerminalSettingsModal open={terminalSettingsOpen && terminalSettingsMode === "onboarding"} mode="onboarding" settings={terminalSettings} workspace={executionWorkspace} onClose={closeTerminalSettings} onSave={saveTerminalSettings} onOpenExternal={openExternalTerminal} />
       <AuthModal
         open={authModalOpen}
@@ -4295,7 +4323,7 @@ const ConversationHistory = memo(function ConversationHistory({ messages, events
   </div>;
 });
 
-function ConversationView({ messages, events, trajectoryEvents, nativeBackend, harnessBound, onHarnessChange, nativeQuestions, onNativeAnswer, onNativeSteer, workspace, projectId, agentBusy, backgroundTaskBusy = false, queuedPrompts, onQueuedPromptsChange, interrupting, canInterrupt, pendingAction, changeSets, researchMode, reasoningEffort, contextLength, modelCapabilities, contextItems, onOpenWorkspaceSettings, onCommand, contextSummary, compactedThroughTurnId, onSubmit, onInterrupt, onResearchMode, onAddContext, onRemoveContext, onApprove, onReject, onOpenFile, showWelcome, onWelcomeAction, composerRequest, draftKey, currentFile, currentSelection, onComposerRequestApplied, submitError, initialScrollTop, onScrollTop, commentScope, addingComment, commentsShowResolved, onExitComments }: {
+function ConversationView({ messages, events, trajectoryEvents, nativeBackend, harnessBound, onHarnessChange, nativeQuestions, onNativeAnswer, onNativeSteer, workspace, projectId, agentBusy, backgroundTaskBusy = false, queuedPrompts, onQueuedPromptsChange, interrupting, canInterrupt, pendingAction, changeSets, researchMode, reasoningEffort, contextLength, modelCapabilities, contextItems, onOpenWorkspaceSettings, onCommand, contextSummary, compactedThroughTurnId, onSubmit, onInterrupt, onResearchMode, onAddContext, onRemoveContext, onApprove, onReject, onOpenFile, showWelcome, onWelcomeAction, composerRequest, draftKey, activeComposerRef, adoptedComposerFocusRef, currentFile, currentSelection, onComposerRequestApplied, submitError, initialScrollTop, onScrollTop, commentScope, addingComment, commentsShowResolved, onExitComments }: {
   commentScope: SessionCommentsScope | null;
   addingComment: boolean;
   commentsShowResolved: boolean;
@@ -4341,6 +4369,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   composerRequest: ComposerRequest | null;
   submitError?: string;
   draftKey: string;
+  activeComposerRef: React.RefObject<HTMLTextAreaElement | null>;
+  adoptedComposerFocusRef: React.RefObject<string | null>;
   initialScrollTop: number | null;
   onScrollTop: (top: number) => void;
   currentFile?: WorkspaceFilePreview | null;
@@ -4359,8 +4389,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const [steering, setSteering] = useState(false);
   const reportedNativeUsage = useMemo(() => nativeUsage(trajectoryEvents), [trajectoryEvents]);
   const slashRunningRef = useRef(false);
-  const storedDraftRef = useRef<ComposerDraft | null>(readComposerDraft(draftKey));
-  const [prompt, setPrompt] = useState(storedDraftRef.current?.text ?? "");
+  const [storedDraft] = useState(() => readComposerDraft(draftKey));
+  const [prompt, setPrompt] = useState(storedDraft?.text ?? "");
   const [promptHistory, setPromptHistory] = useState<string[]>(readComposerHistory);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const setQueuedPrompts = onQueuedPromptsChange;
@@ -4370,6 +4400,10 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const [contextPickerRequest, setContextPickerRequest] = useState(0);
   const contextUsageTriggerRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const bindComposer = useCallback((field: HTMLTextAreaElement | null) => {
+    composerRef.current = field;
+    activeComposerRef.current = field;
+  }, [activeComposerRef]);
   const composerBoxRef = useRef<HTMLDivElement>(null);
   const appliedComposerRequestRef = useRef<string | null>(null);
   // Parent activity updates can occur every second. Keep the history's event
@@ -4380,7 +4414,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const rejectHistoryAction = useCallback(() => historyHandlersRef.current.onReject(), []);
   const openHistoryFile = useCallback((path: string) => historyHandlersRef.current.onOpenFile(path), []);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
-  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraftRef.current?.newChatMode ?? "standard");
+  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraft?.newChatMode ?? "standard");
   const welcomeVisible = showWelcome && !welcomeDismissed;
 
   useEffect(() => {
@@ -4391,28 +4425,15 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [composerRequest, onComposerRequestApplied]);
 
-  useEffect(() => {
-    // A queued composer request wins over the stored draft on first mount:
-    // "Ask AI" from another module switches sections and sets both in the same
-    // commit, so restoring the empty draft here would erase the prompt.
-    if (composerRequest && appliedComposerRequestRef.current === composerRequest.id) return;
-    const stored = readComposerDraft(draftKey);
-    storedDraftRef.current = stored;
-    setNewChatMode(stored?.newChatMode ?? "standard");
-    setPrompt(stored?.text ?? "");
-    setPendingResearchSkill(null);
-    setCommandNotice("");
-    setHistoryIndex(-1);
-    if (!stored) return;
-    const frame = requestAnimationFrame(() => {
-      const textarea = composerRef.current;
-      if (!textarea) return;
-      const start = Math.min(stored.selectionStart, stored.text.length);
-      const end = Math.min(stored.selectionEnd, stored.text.length);
-      textarea.setSelectionRange(start, end);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [draftKey]);
+  useLayoutEffect(() => {
+    const textarea = composerRef.current;
+    if (!textarea) return;
+    if (adoptedComposerFocusRef.current === draftKey) {
+      adoptedComposerFocusRef.current = null;
+      textarea.focus();
+    }
+    if (storedDraft && !composerRequest) textarea.setSelectionRange(storedDraft.selectionStart, storedDraft.selectionEnd);
+  }, [storedDraft]);
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -4771,7 +4792,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
     }
     requestAnimationFrame(() => {
       const textarea = composerRef.current;
-      if (!textarea) return;
+      if (!textarea || (sent && textarea.value)) return;
       textarea.focus();
       const end = textarea.value.length;
       textarea.setSelectionRange(end, end);
@@ -4853,7 +4874,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
           <strong>{t("Idea Spark")}</strong>
           <button type="button" onClick={() => { setPendingResearchSkill(null); setCommandNotice(""); }} aria-label={t("Remove Idea Spark")} title={t("Remove Idea Spark")}><X size={11} /></button>
         </div>}
-        <textarea ref={composerRef} className={newChatMode === "research" && prompt === RESEARCH_EXAMPLE ? "research-example" : undefined} value={prompt} disabled={commandRunning} onChange={(event) => { setPrompt(event.target.value); setHistoryIndex(-1); updateSlashQuery(event.target.value, event.target.selectionStart); }} onPaste={handleComposerPaste} onContextMenu={(event) => { event.preventDefault(); setComposerMenu({ x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => {
+        <textarea ref={bindComposer} className={newChatMode === "research" && prompt === RESEARCH_EXAMPLE ? "research-example" : undefined} value={prompt} disabled={commandRunning} onChange={(event) => { setPrompt(event.target.value); setHistoryIndex(-1); updateSlashQuery(event.target.value, event.target.selectionStart); }} onPaste={handleComposerPaste} onContextMenu={(event) => { event.preventDefault(); setComposerMenu({ x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           const textarea = event.currentTarget;
           if (slashOpen) {

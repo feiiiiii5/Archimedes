@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const test = require("node:test");
 const store = require("./store.cjs");
 const agent = require("./agent.cjs");
-const { createWorkspaceIpc, isWorkspaceDataChannel } = require("./workspace-context.cjs");
+const { createWorkspaceIpc, isWorkspaceDataChannel, resolveResearchContext } = require("./workspace-context.cjs");
 const source = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 function extract(name) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -54,6 +54,57 @@ test("menu proposals and late reader previews preserve the accepted owner; recov
   });
   assert.equal(handlers.get("paper-review-app:list-papers")(event).at(0).notes, "A notes", "indirect libraryStore consumers retain A");
 
+  const reviewStart = source.indexOf('  ipcMain.handle("paper-review-app:create",');
+  const reviewEnd = source.indexOf('  ipcMain.handle("paper-review-app:get-run",', reviewStart);
+  new Function("scope", `with(scope) { ${source.slice(reviewStart, reviewEnd)} }`)({
+    ipcMain: ipc, store, windowWorkspaces, resolveWorkspace: fs.realpathSync,
+    paperReview: { createRun: (_input, options) => options.workspace },
+  });
+  const review = handlers.get("paper-review-app:create");
+  assert.equal(await review(event, { workspace: b, source: { kind: "library" } }), a);
+  assert.equal(await review(event, { workspace: b, source: { paperId: "seed-react" } }), a);
+  assert.equal(await review(event, { workspace: b, source: { kind: "pdf" } }), b);
+
+  const runStart = source.indexOf('  ipcMain.handle("agent:run",');
+  const runEnd = source.indexOf('  ipcMain.handle("paper-review:run",', runStart);
+  let finishReply, started;
+  const pending = new Promise(resolve => { started = resolve; });
+  const executionFolder = path.join(root, "paper-execution");
+  fs.mkdirSync(executionFolder);
+  const project = ownerA.createResearchProject({ name: "Paper chat project", workspacePath: executionFolder });
+  const projectWorkspace = ownerA.defaultProjectWorkspace(project.id);
+  const library = ownerA.listLibraries(project.id)[0];
+  const paper = ownerA.addPaper(library.id, { title: "Paper chat fixture", authors: ["Fixture Author"], year: 2026 });
+  const paperThread = ownerA.createResearchThread({
+    prompt: "Read paper", mode: "free-chat", kind: "paper",
+    projectId: project.id, workspaceId: projectWorkspace.id, workspacePath: executionFolder,
+  });
+  const fakeAgent = { runAgent: (input) => { started(input); return new Promise(resolve => { finishReply = resolve; }); } };
+  new Function("scope", `with(scope) { ${source.slice(runStart, runEnd)} }`)({
+    ipcMain: ipc, store, resolveWorkspace: fs.realpathSync, resolveResearchContext, sanitizeAgentContext: async () => [],
+    agentBackendConfig: { get: () => ({ backend: "api" }) }, modelConfig: { getActiveModelConfig: () => ({}) },
+    normalizeReasoningEffort: () => "medium", normalizeContextLength: () => "standard", agent: fakeAgent,
+    runWindowAgent: ({ run }) => run({ emit() {} }),
+  });
+  const reply = handlers.get("agent:run")(event, {
+    prompt: "Read this", origin: "paper", paperId: paper.id,
+    workspace: executionFolder, projectId: project.id, workspaceId: projectWorkspace.id,
+  });
+  const agentInput = await Promise.race([pending, reply]);
+  assert.equal(agentInput.dataStore, ownerA);
+  assert.equal(agentInput.workspace, executionFolder);
+  assert.equal(agentInput.workspaceId, projectWorkspace.id);
+  helpers.setWindowWorkspace(1, b);
+  finishReply({ threadId: paperThread.id, response: "A saved answer" });
+  const saved = await reply;
+  assert.equal(saved.paperChatSaveError, undefined);
+  const associated = ownerA.getPaperChatThread(paper.id, project.id);
+  assert.equal(associated.id, paperThread.id);
+  assert.equal(associated.workspace_id, projectWorkspace.id);
+  assert.equal(ownerB.getPaperChatThread(paper.id), null);
+  helpers.setWindowWorkspace(1, a);
+  claim(event, sharedThread, true, a);
+
   await helpers.openFolderFromMenu();
   assert.deepEqual(proposals, [["menu:open-folder", b]]);
   assert.equal(handlers.get("library:owner")(event), a, "an ignored menu proposal does not switch IPC ownership");
@@ -83,4 +134,20 @@ test("menu proposals and late reader previews preserve the accepted owner; recov
     assert.equal(handlers.get(channel)(event), "available", channel);
   }
   assert.throws(() => handlers.get("library:owner")(event), /ENOENT|exist/);
+});
+
+test("a window that vetoes Quit keeps its detached research database open", t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-quit-owner-")));
+  const owner = store.createWorkspaceStore(root);
+  t.after(() => { store.closeAllWorkspaces(); fs.rmSync(root, { recursive: true, force: true }); });
+  const app = new (require("node:events").EventEmitter)();
+  const registration = source.slice(source.lastIndexOf('app.on(', source.indexOf('  closeAllNativeClients();')));
+  new Function("app", "store", "closeAllNativeClients", "closeAllTerminals", "collaborationServer", "presence", registration)(
+    app, store, () => {}, () => {}, null, null,
+  );
+  app.emit("before-quit");
+  owner.updatePaper("seed-react", { notes: "finished after the canceled quit" });
+  assert.equal(owner.getPaper("seed-react").notes, "finished after the canceled quit");
+  app.emit("will-quit");
+  assert.throws(() => owner.getPaper("seed-react"), /Open a workspace/);
 });
