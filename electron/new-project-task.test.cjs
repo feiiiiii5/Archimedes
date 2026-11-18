@@ -19,7 +19,7 @@ test("new project tasks use returned records before rerender, and empty side cha
   const scope = {
     ...helpers, t: value => value, projects: [{ id: "old-project", workspace_path: "/old" }], workspaces: [], workspace: "/data",
     newProjectName: "New project", newProjectWorkspace: project.workspace_path, agentBusy: false,
-    taskSelectionRef: { current: null }, dataFolderLoadingRef: { current: false }, threadOpenRequestRef: { current: 0 }, activeThreadIdRef: { current: null }, commandLockRef: { current: false },
+    activeRunRef: { current: null }, taskSelectionRef: { current: null }, dataFolderLoadingRef: { current: false }, threadOpenRequestRef: { current: 0 }, activeThreadIdRef: { current: null }, commandLockRef: { current: false },
     activeProjectId: "old-project", activeWorkspaceId: null, sideThread: null, researchMode: "free-chat", threadVisibility: "project", executionWorkspace: "/old", initialMessages: [],
     setProjects() {}, setWorkspaces() {}, setNewProjectName() {}, setNewProjectError() {}, setNewProjectOpen() {},
     setMainSection() {}, clearPendingAssistantDeltas() {}, setBoundHarness() {}, setThreadVisibility() {}, setMessages() {}, setTrajectoryEvents() {}, setEvents() {}, setPendingAction() {}, setContextItems() {}, setChangeSets() {}, setChatViewNonce() {}, setWorkbenchOpen() {},
@@ -27,13 +27,29 @@ test("new project tasks use returned records before rerender, and empty side cha
     setThreads(update) { state.threads = update(state.threads); }, setSideThread(value) { state.side = value; },
     desktopBridge: { createResearchProject: async () => project, listResearchWorkspaces: async () => [space], createResearchThread: async input => { created = input; return { id: "side", project_id: input.projectId, workspace_id: input.workspaceId, workspace_path: input.workspacePath }; } },
   };
-  const { code } = await transformWithOxc(["startNewTask", "createProject", "runConversationCommand"].map(extract).join("\n"), "new-project-task.ts");
-  const callbacks = new Function("scope", `with(scope) { ${code}; return {createProject,runConversationCommand}; }`)(scope);
+  const { code } = await transformWithOxc(["startNewTask", "createProject", "runConversationCommand", "selectProject", "selectWorkspace", "changeProjectWorkspace"].map(extract).join("\n"), "new-project-task.ts");
+  const callbacks = new Function("scope", `with(scope) { ${code}; return {startNewTask,createProject,runConversationCommand,selectProject,selectWorkspace,changeProjectWorkspace}; }`)(scope);
   await callbacks.createProject();
   assert.equal(state.selection.projectId, project.id);
   assert.equal(state.selection.workspaceId, space.id);
   assert.equal(state.selection.executionRoot, project.workspace_path);
-  scope.activeProjectId = project.id; scope.activeWorkspaceId = "sandbox";
+  scope.projects = [project]; scope.workspaces = [space];
+  scope.activeProjectId = project.id; scope.activeWorkspaceId = space.id;
+  const first = scope.threadOpenRequestRef.current;
+  await callbacks.selectProject(project.id);
+  await callbacks.selectWorkspace(space);
+  assert.equal(scope.threadOpenRequestRef.current, first + 2);
+  scope.activeRunRef.current = { ownerKey: helpers.taskDraftKey(state.selection) };
+  const original = state.selection;
+  callbacks.startNewTask();
+  assert.equal(state.selection, original, "a replacement empty task cannot take over a running conversation");
+  scope.activeRunRef.current = null;
+  scope.setProjectFolderError = () => {};
+  scope.desktopBridge.chooseWorkspace = async () => "/new-path";
+  scope.desktopBridge.setResearchProjectWorkspace = async () => ({ ...project, workspace_path: "/new-path" });
+  await callbacks.changeProjectWorkspace(project);
+  assert.equal(state.selection.executionRoot, "/new-path");
+  scope.activeWorkspaceId = "sandbox";
   scope.executionWorkspace = "/execution/sandbox";
   await callbacks.runConversationCommand("side");
   assert.equal(created.workspaceId, "sandbox");
