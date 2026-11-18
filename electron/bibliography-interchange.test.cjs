@@ -131,6 +131,21 @@ test("BibTeX ignores commented-out entries with nested braces and tolerates whit
 });
 
 
+test("BibTeX preview rejects citation keys that collide only by case", async () => {
+  const data = database("Key case"); let unmount;
+  try {
+    const library = data.db.listLibraries(data.project.id)[0];
+    const existing = data.db.addPaper(library.id, { ...fixture.paper, title: "Existing target", doi: "10.5555/existing-key" });
+    data.db.setPaperBibliography(existing.id, { citekey: "Smith2020", entryType: "article" });
+    unmount = await mount(scope.BibliographyDialog, { bridge: data.bridge, library, onClose() {}, onChanged: async () => {} });
+    await input(document.querySelector('[aria-label="BibTeX source"]'), '@article{smith2020,title={Different target},doi={10.5555/different}}');
+    assert.ok(document.body.textContent.includes("Citation key conflict"), "target collection keys collide case-insensitively");
+    await input(document.querySelector('[aria-label="BibTeX source"]'), '@article{Batch2020,title={First batch},doi={10.5555/batch-one}}\n@article{batch2020,title={Second batch},doi={10.5555/batch-two}}');
+    assert.ok(document.body.textContent.includes("Citation key conflict"), "batch entries collide case-insensitively");
+  } finally { if (unmount) await unmount(); data.close(); }
+});
+
+
 test("BibTeX preserves literal braces and backslashes across its own export while retaining grouped capitalization", () => {
   const paper = { ...fixture.paper, url: `https://doi.org/${fixture.paper.doi}`, id: "literal", citekey: "literal", entry_type: "article", title: "Sets {x, y} & C:\\data_2026", authors: ["Research {A} and Development"], venue: "100% evidence" };
   const exported = scope.exportBibliography([paper]);

@@ -201,7 +201,7 @@ interface ResearchDeskBridge {
       step?: ReproductionRunStep;
     }) => void) => () => void;
     deepSearchPapers: (input: DeepPaperSearchInput) => Promise<DeepPaperSearchResponse>;
-    getBenchmarkRadarData: () => Promise<BenchmarkRadarData>;
+    getBenchmarkRadarData: (options?: { cachedOnly?: boolean; refresh?: boolean }) => Promise<BenchmarkRadarData>;
     searchConferencePapers: (input: ConferenceSearchOptions) => Promise<ConferenceSearchResponse>;
     importLocalLibraryPaper: (libraryId: string, workspace?: string) => Promise<LibraryPaper | null>;
     addLibraryPaper: (libraryId: string, paper: AcademicSearchResult) => Promise<LibraryPaper>;
@@ -1883,18 +1883,22 @@ interface AgentRunResult {
   taskId: string;
   response: string;
   status: string;
+  error?: ModelIncompleteFailure;
   actions: AgentAction[];
   thread: ResearchThreadDetail;
 }
 
+interface ModelIncompleteFailure { code: "MODEL_RESPONSE_INCOMPLETE"; reason: string; provider: string; finishReason?: string | null }
+
 interface AgentEvent {
-  type: "status" | "tool" | "artifact" | "approval" | "assistant_delta" | "complete" | "failed" | "configuration" | "interrupted" | "workspace_change" | "native_activity" | "native_usage" | "native_plan" | "native_diff" | "native_question" | "native_question_resolved" | "native_approval_resolved" | "native_steer";
+  type: "status" | "tool" | "artifact" | "approval" | "assistant_delta" | "complete" | "failed" | "incomplete" | "configuration" | "interrupted" | "workspace_change" | "native_activity" | "native_usage" | "native_plan" | "native_diff" | "native_question" | "native_question_resolved" | "native_approval_resolved" | "native_steer";
   title: string;
   detail: string;
   threadId?: string;
   turnId?: string;
   delta?: string;
   clientRunId?: string;
+  error?: ModelIncompleteFailure;
   action?: AgentAction;
   changeSet?: WorkspaceChangeSet;
   toolCall?: { id?: string; name?: string; source: string; status: "running" | "completed" | "failed" | "interrupted"; durationMs: number };
@@ -2083,6 +2087,9 @@ interface BenchmarkRadarRecord {
   attentionScore: number | null;
   attentionRank: number | null;
   forecast: number | null;
+  forecastReason?: string;
+  forecastConfidence?: string;
+  forecastHorizon?: string;
 }
 
 interface BenchmarkRadarDirection {
@@ -2093,6 +2100,8 @@ interface BenchmarkRadarDirection {
 }
 
 interface BenchmarkRadarData {
+  fetchedAt?: string;
+  refreshError?: string;
   source: "local" | "remote" | "cached" | "bundled";
   sourceRoot: string;
   updatedAt: string;
