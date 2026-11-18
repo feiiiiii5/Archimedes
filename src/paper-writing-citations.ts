@@ -12,7 +12,7 @@ function bibliographyBlocks(text: string): BibBlock[] {
   // editing target or reserve a citation key.
   const skipDirective = (open: string, close: string) => {
     cursor++;
-    let depth = 1, braces = 0;
+    let depth = 1, braces = 0, quoted = false;
     while (cursor < text.length) {
       const character = text[cursor];
       if (character === "\\") { cursor += 2; continue; }
@@ -22,8 +22,9 @@ function bibliographyBlocks(text: string): BibBlock[] {
       } else {
         if (character === "{") braces++;
         else if (character === "}" && braces > 0) braces--;
-        else if (character === "(" && braces === 0) depth++;
-        else if (character === ")" && braces === 0 && --depth === 0) { cursor++; return; }
+        else if (character === '"' && braces === 0) quoted = !quoted;
+        else if (!quoted && character === "(" && braces === 0) depth++;
+        else if (!quoted && character === ")" && braces === 0 && --depth === 0) { cursor++; return; }
       }
       cursor++;
     }
@@ -111,7 +112,8 @@ export function prepareManuscriptCitation(content: string, paper: BibliographyPa
     const value = generated.slice(field.valueStart, field.valueEnd);
     // Keep the manuscript's choice of journal/booktitle field and every
     // handwritten field the library does not supply.
-    const current = existing.fields.find(item => item.name === field.name || field.name === "journal" && item.name === "booktitle");
+    const venueAlias = field.name === "journal" ? "booktitle" : field.name === "booktitle" ? "journal" : undefined;
+    const current = existing.fields.find(item => item.name === field.name) ?? existing.fields.find(item => item.name === venueAlias);
     if (current) replacements.push({ start: current.valueStart, end: current.valueEnd, value });
     else additions.push(`  ${field.name} = ${value}`);
   }

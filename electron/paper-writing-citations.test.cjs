@@ -126,3 +126,13 @@ test("updating a DOI-matched concatenated field consumes its whole expression an
   assert.ok(marked.content.endsWith(other));
   assert.ok(!marked.content.includes('"Old" # suffix'));
 });
+
+test("quoted parentheses in a directive preserve the existing key and venue field", () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "venue", citekey: "libraryKey", entry_type: "conference" };
+  const input = `@string(journal = "Series (A")\n@article{handKey, title={Old}, doi={${paper.doi}}, journal={Old Venue}}\n`;
+  const update = citations.prepareManuscriptCitation(input, paper);
+  assert.equal(update.citekey, "handKey");
+  assert.equal(update.content.match(/@article/g).length, 1);
+  assert.match(update.content, /journal\s*=\s*\{Local fixture\}/);
+  assert.doesNotMatch(update.content, /booktitle\s*=/);
+});
