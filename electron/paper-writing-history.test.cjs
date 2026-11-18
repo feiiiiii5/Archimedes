@@ -75,3 +75,88 @@ test("a manuscript saved without a conversation remains owned and usable after t
   assert.equal(f.command("save", { name: "Continue in original folder", threadId: "unknown-thread" }).threadId, null, "a renderer cannot attach an unrelated thread through historical-owner recovery");
   assert.throws(() => f.command("list", { mainPath: "unregistered/main.tex" }), /does not match/);
 });
+
+test("a key version restores a missing main file and a missing manuscript folder", t => {
+  const f = fixture(t), saved = f.command("save", { name: "Before moving sources" });
+  const main = path.join(f.root, "paper/main.tex");
+  const original = fs.readFileSync(main);
+  fs.renameSync(main, path.join(f.root, "paper/renamed.tex"));
+  let comparison = f.command("compare", { id: saved.id });
+  assert.deepEqual(comparison.changes.map(({ path, status }) => [path, status]), [["paper/main.tex", "removed"], ["paper/renamed.tex", "added"]]);
+  const restored = f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion });
+  assert.deepEqual(fs.readFileSync(main), original);
+  assert.ok(restored.previousVersion.files.some(file => file.path === "paper/renamed.tex"));
+  fs.renameSync(path.join(f.root, "paper"), path.join(f.root, "moved-paper"));
+  comparison = f.command("compare", { id: saved.id });
+  assert.equal(comparison.changes.length, saved.files.length);
+  f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion });
+  assert.deepEqual(fs.readFileSync(main), original);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, "moved-paper/main.tex")), original);
+});
+
+test("restoration swaps files and directories in both directions and keeps a usable return point", t => {
+  const f = fixture(t);
+  const file = name => path.join(f.root, "paper", name);
+  fs.writeFileSync(file("z.tex"), "Original standalone file");
+  const originalMain = fs.readFileSync(file("main.tex"));
+  const saved = f.command("save", { name: "Before restructuring" });
+  fs.unlinkSync(file("main.tex"));
+  fs.mkdirSync(file("main.tex"));
+  fs.writeFileSync(file("main.tex/fragment.tex"), "Current main folder contents");
+  fs.unlinkSync(file("z.tex"));
+  fs.mkdirSync(file("z.tex"));
+  fs.writeFileSync(file("z.tex/fragment.tex"), "Current standalone folder contents");
+  fs.rmSync(file("sections"), { recursive: true });
+  fs.writeFileSync(file("sections"), "Current standalone sections file");
+  const comparison = f.command("compare", { id: saved.id });
+  const restored = f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion });
+  assert.deepEqual(fs.readFileSync(file("main.tex")), originalMain);
+  assert.equal(fs.readFileSync(file("z.tex"), "utf8"), "Original standalone file");
+  assert.equal(fs.readFileSync(file("sections/body.tex"), "utf8"), "Original evidence.\n");
+  assert.equal(f.command("compare", { id: saved.id }).changes.length, 0);
+  assert.ok(restored.previousVersion.id);
+  const back = f.command("compare", { id: restored.previousVersion.id });
+  f.command("restore", { id: restored.previousVersion.id, expectedSourceVersion: back.currentSourceVersion });
+  assert.equal(fs.readFileSync(file("main.tex/fragment.tex"), "utf8"), "Current main folder contents");
+  assert.equal(fs.readFileSync(file("z.tex/fragment.tex"), "utf8"), "Current standalone folder contents");
+  assert.equal(fs.readFileSync(file("sections"), "utf8"), "Current standalone sections file");
+});
+
+test("a blocking directory with excluded files leaves the current manuscript untouched", t => {
+  const f = fixture(t), file = name => path.join(f.root, "paper", name);
+  fs.writeFileSync(file("z.tex"), "Saved file");
+  const saved = f.command("save", { name: "Saved before changing layout" });
+  fs.writeFileSync(file("main.tex"), "Current main file");
+  fs.unlinkSync(file("z.tex"));
+  fs.mkdirSync(file("z.tex/.cache"), { recursive: true });
+  fs.writeFileSync(file("z.tex/fragment.tex"), "Current fragment");
+  fs.writeFileSync(file("z.tex/.cache/retained.txt"), "Excluded data");
+  const comparison = f.command("compare", { id: saved.id });
+  assert.throws(() => f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion }), /directory blocking restoration contains unsaved material/);
+  assert.equal(fs.readFileSync(file("main.tex"), "utf8"), "Current main file");
+  assert.equal(fs.readFileSync(file("z.tex/fragment.tex"), "utf8"), "Current fragment");
+  assert.equal(fs.readFileSync(file("z.tex/.cache/retained.txt"), "utf8"), "Excluded data");
+  assert.equal(f.command("list").length, 1);
+});
+
+test("an install failure after writing a restored file rolls back every changed path", t => {
+  const f = fixture(t), file = name => path.join(f.root, "paper", name);
+  fs.writeFileSync(file("z.tex"), "Saved standalone file");
+  const saved = f.command("save", { name: "Version before restructuring" });
+  fs.writeFileSync(file("main.tex"), "Current main file");
+  fs.unlinkSync(file("z.tex"));
+  fs.mkdirSync(file("z.tex"));
+  fs.writeFileSync(file("z.tex/fragment.tex"), "Current new folder contents");
+  const comparison = f.command("compare", { id: saved.id });
+  const realCopy = fs.copyFileSync;
+  let writtenMain = false;
+  t.mock.method(fs, "copyFileSync", (from, to, flags) => {
+    if (to === file("z.tex")) throw new Error("Fixture write failure");
+    realCopy(from, to, flags);
+    if (to === file("main.tex")) writtenMain = true;
+  });
+  assert.throws(() => f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion }), /Fixture write failure/);
+  assert.equal(writtenMain, true);
+  assert.equal(fs.readFileSync(file("main.tex"), "utf8"), "Current main file");
+  assert.equal(fs.readFileSync(file("z.tex/fragment.tex"), "utf8"), "Current new folder contents");
+});

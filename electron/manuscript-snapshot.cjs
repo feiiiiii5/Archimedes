@@ -23,9 +23,9 @@ function fileDigest(file) {
 }
 
 /** Version the manuscript directory, including sections, bibliography and assets. */
-function captureManuscriptSources(root, sourcePath) {
+function captureManuscriptSources(root, sourcePath, { allowMissing = false } = {}) {
   const workspace = workspacePath(root);
-  const source = workspacePath(workspace, sourcePath);
+  const source = workspacePath(workspace, sourcePath, { mustExist: !allowMissing });
   const directory = path.dirname(source);
   const files = [], observations = [], untracked = [];
   let bytes = 0;
@@ -43,7 +43,7 @@ function captureManuscriptSources(root, sourcePath) {
       observations.push([name, digest.observation]);
     }
   }
-  visit(directory);
+  if (!allowMissing || fs.existsSync(directory)) visit(workspacePath(workspace, relative(workspace, directory)));
   return { workspace, source_path: sourcePath, project_path: relative(workspace, directory), coverage: "manuscript-directory", source_version: hash(JSON.stringify({ files, untracked })), observation_version: hash(JSON.stringify(observations)), files, total_bytes: bytes, untracked_inputs: untracked, excluded_directories: [...EXCLUDED_DIRECTORIES] };
 }
 

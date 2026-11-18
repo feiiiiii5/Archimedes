@@ -27,9 +27,10 @@ function storageTarget(root, relative, createParents = false) {
 function ownerFor(input) {
   const executionRoot = fs.realpathSync(input.executionRoot);
   if (!input.projectId || !input.workspaceId || typeof input.mainPath !== "string" || !/\.tex$/i.test(input.mainPath)
-    || path.isAbsolute(input.mainPath) || input.mainPath.split(/[\\/]/).includes("..")) throw new Error("Choose a project manuscript main .tex file.");
+    || path.isAbsolute(input.mainPath) || input.mainPath.includes("\0")
+    || input.mainPath.split(/[\\/]/).some(part => part.startsWith(".") && part !== ".")) throw new Error("Choose a project manuscript main .tex file.");
   const mainPath = input.mainPath.replaceAll("\\", "/").replace(/^\.\//, "");
-  writableTarget(executionRoot, mainPath);
+  storageTarget(executionRoot, mainPath);
   return { dataRoot: fs.realpathSync(input.dataRoot || executionRoot), projectId: input.projectId, workspaceId: input.workspaceId, executionRoot, mainPath, threadId: input.threadId || null };
 }
 
@@ -74,7 +75,8 @@ function readVersion(input, id) {
   if (manifest.schemaVersion !== 1 || manifest.id !== id || !sameOwner(manifest, owner) || !Array.isArray(manifest.files)) throw new Error("This key version does not belong to the selected manuscript.");
   const prefix = path.posix.dirname(owner.mainPath);
   for (const entry of manifest.files) {
-    if (typeof entry.path !== "string" || path.isAbsolute(entry.path) || entry.path.split("/").includes("..")
+    if (typeof entry.path !== "string" || !entry.path || entry.path === "." || entry.path.includes("\\")
+      || path.isAbsolute(entry.path) || path.posix.normalize(entry.path) !== entry.path || entry.path.split("/").includes("..")
       || entry.path.split("/").includes(".archimedes") || prefix !== "." && !entry.path.startsWith(`${prefix}/`)
       || !/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0) throw new Error("Invalid manuscript version file inventory.");
   }
@@ -131,7 +133,11 @@ function listProjectManuscriptVersions(input) {
 }
 
 function compareManuscriptVersion(input) {
-  const owner = ownerFor(input), version = readVersion(owner, input.id), current = source(owner);
+  const owner = ownerFor(input), version = readVersion(owner, input.id);
+  return compareSources(owner, version, source(owner));
+}
+
+function compareSources(owner, version, current) {
   const before = new Map(version.files.map(file => [file.path, file])), after = new Map(current.files.map(file => [file.path, file]));
   const changes = [];
   for (const name of [...new Set([...before.keys(), ...after.keys()])].sort()) {
@@ -145,19 +151,117 @@ function compareManuscriptVersion(input) {
   return { version, currentSourceVersion: current.source_version, changes };
 }
 
-function restoreManuscriptVersion(input) {
-  const owner = ownerFor(input), comparison = compareManuscriptVersion(input);
-  if (comparison.currentSourceVersion !== input.expectedSourceVersion) throw new Error("The manuscript changed after this comparison. Compare it again before restoring.");
-  const version = comparison.version;
-  // Read every historical input before touching the manuscript. Retain the
-  // actual current content as a named return point for this explicit restore.
-  const contents = version.files.map(file => ({ file, bytes: blob(owner, version, file) }));
-  const previousVersion = comparison.changes.length && source(owner).files.length ? saveManuscriptVersion({ ...owner, restorationCheckpoint: true, name: `Before restoring ${version.name}`.slice(0, 120) }) : null;
-  const targets = contents.map(({ file, bytes }) => ({ file, bytes, target: storageTarget(owner.executionRoot, file.path, true).target }));
+function hasParent(root, target, candidates) {
+  for (let parent = path.dirname(target); parent !== root; parent = path.dirname(parent)) {
+    if (candidates.has(parent)) return true;
+  }
+  return false;
+}
+
+function verifyReplacingDirectory(directory, removed, exclusions, originalDirectory = directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const original = path.join(originalDirectory, entry.name);
+    if (entry.isDirectory() && !exclusions.has(entry.name)) {
+      verifyReplacingDirectory(path.join(directory, entry.name), removed, exclusions, original);
+    } else if (!entry.isFile() || !removed.has(original)) {
+      throw new Error(`A directory blocking restoration contains unsaved material: ${original}`);
+    }
+  }
+}
+
+function restorePlan(owner, version, current, comparison) {
+  const root = owner.executionRoot;
+  const changes = new Map(comparison.changes.map(change => [change.path, change.status]));
   const removedPaths = comparison.changes.filter(change => change.status === "added").map(change => change.path);
-  for (const item of targets) fs.writeFileSync(item.target, item.bytes);
-  for (const name of removedPaths) fs.unlinkSync(storageTarget(owner.executionRoot, name).target);
-  return { version, previousVersion, restoredPaths: version.files.map(file => file.path), removedPaths };
+  const removed = new Set(removedPaths.map(name => storageTarget(root, name).target));
+  const directories = new Set();
+  const exclusions = new Set(current.excluded_directories);
+  const writes = [];
+  for (const file of version.files) {
+    const bytes = blob(owner, version, file);
+    if (!changes.has(file.path)) continue;
+    const target = workspacePath(root, file.path, { mustExist: false });
+    let existing;
+    if (!hasParent(root, target, removed)) {
+      storageTarget(root, file.path);
+      existing = fs.lstatSync(target, { throwIfNoEntry: false });
+      if (existing?.isDirectory()) {
+        verifyReplacingDirectory(target, removed, exclusions);
+        directories.add(target);
+      } else if (existing && !existing.isFile()) {
+        throw new Error(`The restored file is blocked by ${file.path}.`);
+      }
+    }
+    writes.push({ target, bytes, relative: file.path, mode: existing?.isFile() ? existing.mode & 0o777 : undefined });
+  }
+  const moves = [
+    ...directories,
+    ...[...removed].filter(target => !hasParent(root, target, directories)),
+    ...writes.filter(item => changes.get(item.relative) === "modified").map(item => item.target),
+  ];
+  return { moves, writes, removedPaths, directories, removed, exclusions };
+}
+
+function applyRestorePlan(root, { moves, writes, directories, removed, exclusions }) {
+  const temporary = fs.mkdtempSync(storageTarget(root, ".archimedes/manuscript-history/.restore-", true).target);
+  const originals = [], installed = [], created = [];
+  function makeParents(target) {
+    const parent = path.dirname(target);
+    if (parent === root || fs.existsSync(parent)) return;
+    makeParents(parent);
+    fs.mkdirSync(parent);
+    created.push(parent);
+  }
+  let keepOriginals = false;
+  try {
+    const prepared = writes.map((item, index) => {
+      const file = path.join(temporary, `next-${index}`);
+      fs.writeFileSync(file, item.bytes, { flag: "wx" });
+      if (item.mode !== undefined) fs.chmodSync(file, item.mode);
+      return { ...item, file };
+    });
+    for (const [index, target] of moves.entries()) {
+      const backup = path.join(temporary, `original-${index}`);
+      fs.renameSync(target, backup);
+      originals.push({ target, backup });
+      if (directories.has(target)) verifyReplacingDirectory(backup, removed, exclusions, target);
+    }
+    for (const { target, relative, file } of prepared) {
+      storageTarget(root, relative);
+      makeParents(target);
+      fs.copyFileSync(file, target, fs.constants.COPYFILE_EXCL);
+      installed.push(target);
+    }
+  } catch (error) {
+    try {
+      for (const target of installed.reverse()) fs.unlinkSync(target);
+      for (const directory of created.reverse()) fs.rmdirSync(directory);
+      for (const { target, backup } of originals.reverse()) {
+        if (fs.lstatSync(target, { throwIfNoEntry: false })) throw new Error(`The original path is now occupied: ${target}`);
+        fs.renameSync(backup, target);
+      }
+    } catch (rollbackError) {
+      keepOriginals = true;
+      throw new Error(`Could not finish restoring. Original files are available in ${temporary}. ${rollbackError.message}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    if (!keepOriginals) {
+      try { fs.rmSync(temporary, { recursive: true, force: true }); }
+      catch (error) { console.warn(`Could not remove manuscript restore staging at ${temporary}:`, error.message); }
+    }
+  }
+}
+
+function restoreManuscriptVersion(input) {
+  const owner = ownerFor(input), version = readVersion(owner, input.id), current = source(owner);
+  const comparison = compareSources(owner, version, current);
+  if (comparison.currentSourceVersion !== input.expectedSourceVersion) throw new Error("The manuscript changed after this comparison. Compare it again before restoring.");
+  const plan = restorePlan(owner, version, current, comparison);
+  const previousVersion = comparison.changes.length && current.files.length ? saveManuscriptVersion({ ...owner, restorationCheckpoint: true, name: `Before restoring ${version.name}`.slice(0, 120) }) : null;
+  if (previousVersion && previousVersion.sourceVersion !== comparison.currentSourceVersion) throw new Error("The manuscript changed after this comparison. Compare it again before restoring.");
+  if (plan.moves.length || plan.writes.length) applyRestorePlan(owner.executionRoot, plan);
+  return { version, previousVersion, restoredPaths: version.files.map(file => file.path), removedPaths: plan.removedPaths };
 }
 
 module.exports = { listProjectManuscriptVersionOwners, isRegisteredManuscriptOwner, listProjectManuscriptVersions, saveManuscriptVersion, compareManuscriptVersion, restoreManuscriptVersion };
