@@ -25,3 +25,12 @@ and restore buttons with real local persistence.
 | --- | --- | --- |
 | Compare after renaming `main.tex` | [Comparison failed](missing-main-before.png) | [Comparison shows the missing main file and allows restore](missing-main-after.png) |
 | Restore after replacing `z.tex` with a directory | [Restore failed after writing the earlier file](path-transition-before.png) | [Restored main and methods, with a return version](path-transition-after.png) |
+
+The source-tree pair uses the same Charcoal viewport and an expanded `sections`
+folder after restoring a version. Both builds restore the correct bytes on disk.
+The earlier build (`8dcff12`) leaves `current.tex` in the Writing tree, and the
+fixed build (`c8b8e58`) shows and opens the restored `restored.tex` immediately.
+
+| Before | After |
+| --- | --- |
+| [Stale entry in expanded folder](source-tree-before.png) | [Restored section visible in the same folder](source-tree-after.png) |
