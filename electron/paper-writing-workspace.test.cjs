@@ -15,10 +15,14 @@ before(async () => {
   const { transformWithOxc } = await import("vite");
   const helpers = await import("../src/paper-writing-state.ts");
   const search = await import("../src/paper-source-search.ts");
+  const bibliography = await import("../src/bibliography.ts");
+  const citationSource = fs.readFileSync(path.join(__dirname, "../src/paper-writing-citations.ts"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export function/g, "function");
+  const citationCode = (await transformWithOxc(citationSource, "paper-writing-citations.ts")).code;
+  const citations = new Function(...Object.keys(bibliography), `${citationCode.replace(/^export \{\};?$/gm, "")}\nreturn { bibliographyKeys, citationKeyFor, prepareManuscriptCitation, manuscriptBibliographyPaths };`)(...Object.values(bibliography));
   const source = fs.readFileSync(path.join(__dirname, "../src/PaperWritingView.tsx"), "utf8");
   const icons = require("lucide-react");
   const names = source.match(/\{([^}]+)\} from "lucide-react"/)[1].split(",").map(name => name.trim());
-  const scope = { React, ...React, ...helpers, ...search,
+  const scope = { React, ...React, ...helpers, ...search, ...citations, BookOpen: icons.BookOpen,
     ...Object.fromEntries(names.map(name => [name, icons[name]])),
     useUISettings: () => ({ t: value => value }),
     Dialog: props => props.open ? React.createElement(props.as || "div", { role: "dialog", onSubmit: props.onSubmit }, props.children) : null,
@@ -29,6 +33,9 @@ before(async () => {
   const tabsSource = fs.readFileSync(path.join(__dirname, "../src/Tabs.tsx"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export /g, "");
   const tabs = await transformWithOxc(tabsSource, "Tabs.tsx", { jsx: { runtime: "classic" } });
   Object.assign(scope, new Function(...Object.keys(scope), `${tabs.code}\nreturn { Tabs, Tab };`)(...Object.values(scope)));
+  const citationView = fs.readFileSync(path.join(__dirname, "../src/PaperWritingCitations.tsx"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^import "[^\"]+";\r?\n/gm, "").replace(/^export default /gm, "").replace(/^export /gm, "");
+  const citationViewCode = (await transformWithOxc(citationView, "PaperWritingCitations.tsx", { jsx: { runtime: "classic" } })).code;
+  scope.PaperWritingCitations = new Function(...Object.keys(scope), `${citationViewCode.replace(/^export \{\};?$/gm, "")}\nreturn PaperWritingCitations;`)(...Object.values(scope));
   const text = source.replace(/^import[\s\S]*?from\s+"[^"]+";\r?\n/gm, "").replace(/^import "[^"]+";\r?\n/gm, "").replace("export default function", "function");
   const { code } = await transformWithOxc(text, "PaperWritingView.tsx", { jsx: { runtime: "classic" } });
   Writing = new Function(...Object.keys(scope), `${code.replace(/^export \{\};?$/gm, "")}\nreturn PaperWritingView;`)(...Object.values(scope));
@@ -70,6 +77,7 @@ async function fixture(t, overrides = {}) {
       compiles.push({ root, name, requestId });
       return overrides.compile ? overrides.compile(root, name, requestId) : { ok: true, diagnostics: [], log: "fake build", duration_ms: 1 };
     },
+    ...overrides.bridge,
     onLatexCompileProgress: callback => { progress = callback; return () => { progress = undefined; }; },
   };
   let reactRoot = createRoot(document.getElementById("root"));
@@ -406,6 +414,105 @@ test("projects sharing one execution folder restore their own manuscript selecti
   assert.equal(document.querySelector('.latex-editor-textarea').value, source("A edit remains owned by the original file"));
 });
 
+async function clickText(label) {
+  const button = [...document.querySelectorAll("button")].find(node => node.textContent.trim() === label);
+  assert.ok(button, label); assert.equal(button.disabled, false, label);
+  await React.act(async () => button.click());
+}
+async function changeInput(node, value) {
+  assert.ok(node);
+  await React.act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value);
+    node.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+}
+
+test("Writing inserts a project-library citation and explicitly refreshes its bibliography without replacing manual content", async t => {
+  let db;
+  const options = { bridge: {
+    listLibraries: async id => db.listLibraries(id), listLibraryPapers: async id => db.listPapers(id), setPaperBibliography: async (...args) => db.setPaperBibliography(...args),
+  } };
+  const f = await fixture(t, options);
+  db = require("./store.cjs"); db.openWorkspace(f.a);
+  const idle = fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-citation-idle-"));
+  t.after(() => { db.openWorkspace(idle); fs.rmSync(idle, { recursive: true, force: true }); });
+  const project = db.createResearchProject({ name: "Citation manuscript", workspacePath: f.a }); options.projectId = project.id;
+  const library = db.listLibraries(project.id)[0], paper = db.addPaper(library.id, require("./test-support/bibliography-fixture.cjs").paper);
+  db.addPaper(library.id, { title: "A different default reference", authors: ["Other Author"], year: 2028, doi: "10.5555/unrelated-default" });
+  const citekey = `paper_${paper.id.replace(/[^a-z0-9]/gi, "")}`;
+  const manual = "% Keep this manuscript annotation\n@book{manual, title={Existing hand-written reference}, note={My note}}\n";
+  fs.writeFileSync(path.join(f.a, "paper/references.bib"), manual);
+  await f.render(f.a); await autoCompileOff();
+  const editor = document.querySelector('.latex-editor-textarea'); editor.setSelectionRange(editor.value.indexOf("\\end{document}"), editor.value.indexOf("\\end{document}"));
+  await click("Insert citation");
+  const chooseReference = async (title = "Evidence handoff fixture") => {
+    await changeInput(document.querySelector('[aria-label="Search project references"]'), title);
+    const insert = [...document.querySelectorAll("button")].find(button => button.textContent === "Insert citation and update .bib");
+    assert.equal(insert.disabled, true, "a filtered-out default reference cannot be inserted");
+    await React.act(async () => document.querySelector(".paper-citation-result").click());
+  };
+  await chooseReference(); await clickText("Insert citation and update .bib");
+  assert.ok(f.disk(f.a).includes(`\\cite{${citekey}}`));
+  assert.equal(db.getPaperBibliography(paper.id).citekey, "", "inserting uses the stable fallback without changing the library key");
+  const first = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8"); assert.ok(first.startsWith(manual)); assert.match(first, /Evidence handoff fixture/);
+  const bibliographyPath = path.join(f.a, "paper/references.bib");
+  const external = "@book{fromEditor,title={An external editor added a reference}}\n";
+  const afterReturn = "@book{afterReturn,title={Another reference added while Writing was hidden}}\n";
+  fs.appendFileSync(bibliographyPath, external);
+  await clickText("Update .bib only");
+  assert.ok(fs.readFileSync(bibliographyPath, "utf8").includes(external));
+  db.repairLibraryPaperMetadata(paper.id, { title: "Corrected source metadata" });
+  await click("Close citations");
+  await f.render(f.b, 2);
+  fs.appendFileSync(bibliographyPath, afterReturn);
+  await f.render(f.a, 3);
+  await settle();
+  await click("Insert citation"); await chooseReference("Corrected source metadata"); await clickText("Update .bib only");
+  const updated = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8");
+  assert.ok(updated.startsWith(manual)); assert.match(updated, /Corrected source metadata/); assert.equal((updated.match(/@article\{/g) || []).length, 1);
+  assert.ok(updated.includes(external));
+  assert.ok(updated.includes(afterReturn));
+  assert.equal(f.reads.filter(read => read.root === f.a && read.name === "paper/references.bib").length, 3);
+  assert.equal(f.disk(f.a).split(`\\cite{${citekey}}`).length - 1, 1, "metadata updates do not insert another citation");
+});
+
+test("an in-flight bibliography refresh does not replace a newer Writing draft", async t => {
+  const pendingRead = deferred();
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "libraryKey" };
+  const bib = "paper/references.bib";
+  let deferNext = false, oldPreview;
+  const f = await fixture(t, {
+    bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] },
+    read: async (root, name, preview) => {
+      if (deferNext && name === bib) {
+        deferNext = false;
+        oldPreview = preview(root, name);
+        return pendingRead.promise;
+      }
+      return preview(root, name);
+    },
+  });
+  const pathname = path.join(f.a, bib);
+  fs.writeFileSync(pathname, "@book{disk,title={Saved reference}}\n");
+  await f.render(f.a);
+  await autoCompileOff();
+  await click("Insert citation");
+  await clickText("Update .bib only");
+  await settle();
+  deferNext = true;
+  await clickText("Update .bib only");
+  assert.ok(oldPreview, "the second action fetches disk even though the bibliography is cached");
+  await f.render(f.a, 2, bib);
+  const newDraft = oldPreview.content + "% A newer unsaved Writing edit\n";
+  await edit(newDraft, bib);
+  await React.act(async () => pendingRead.resolve(oldPreview));
+  await settle();
+  const saved = fs.readFileSync(pathname, "utf8");
+  assert.ok(saved.includes("% A newer unsaved Writing edit"));
+  assert.match(saved, /@article\{libraryKey,/);
+  assert.equal(document.querySelector(`[aria-label="Edit ${bib}"]`).value, saved);
+});
+
 test("returning to a clean cached manuscript reloads external edits before the next save", async t => {
   const f = await fixture(t);
   await f.render(f.a); await autoCompileOff();
@@ -465,4 +572,49 @@ test("preview addresses stay with the execution folder that produced the manuscr
   assert.equal(tokens.get(first), "/project-a");
   assert.equal(api.createPreviewToken(1, "/project-a"), first);
   assert.equal(tokens.get(second), "/project-b");
+});
+
+test("Writing reserves keys from every directly declared bibliography and writes only to the selected file", async t => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "shared" };
+  const f = await fixture(t, { bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] } });
+  const file = name => path.join(f.a, "paper", name);
+  const other = "@book{shared,title={Previously cited book},year={2024}}\n";
+  fs.writeFileSync(file("main.tex"), source("Earlier citation \\cite{shared}.\n\\bibliography{refs,other}\n"));
+  fs.writeFileSync(file("refs.bib"), "% The selected bibliography\n");
+  fs.writeFileSync(file("other.bib"), other);
+  await f.render(f.a);
+  await autoCompileOff();
+  const editor = document.querySelector('.latex-editor-textarea');
+  const position = editor.value.indexOf("\\bibliography"); editor.setSelectionRange(position, position);
+  await click("Insert citation");
+  await clickText("Insert citation and update .bib");
+  await settle();
+  assert.match(f.disk(f.a), /Earlier citation \\cite\{shared\}/);
+  assert.match(f.disk(f.a), /\\cite\{shared_2\}/);
+  assert.match(fs.readFileSync(file("refs.bib"), "utf8"), /@article\{shared_2,/);
+  assert.equal(fs.readFileSync(file("other.bib"), "utf8"), other);
+  assert.deepEqual(f.writes.filter(write => write.name.endsWith(".bib")).map(write => write.name), ["paper/refs.bib"]);
+});
+
+test("Writing keeps bibliography-only updates available while Co-edit owns the manuscript text", async t => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "coeditFixture" };
+  const f = await fixture(t, { bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] } });
+  const original = f.disk(f.a);
+  await f.render(f.a);
+  await autoCompileOff();
+  await click("Co-edit this source with project members");
+  await click("Insert citation");
+  const action = label => [...document.querySelectorAll("button")].find(button => button.textContent.trim() === label);
+  assert.equal(action("Insert citation only").disabled, true);
+  assert.equal(action("Insert citation and update .bib").disabled, true);
+  assert.equal(action("Update .bib only").disabled, false);
+  assert.match(document.body.textContent, /Turn off Co-edit to insert a citation\./);
+  await clickText("Update .bib only");
+  assert.equal(f.disk(f.a), original);
+  assert.match(fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8"), /@article\{coeditFixture,/);
+  await click("Close citations");
+  await click("Co-edit this source with project members");
+  await click("Insert citation");
+  assert.equal(action("Insert citation only").disabled, false);
+  assert.equal(action("Insert citation and update .bib").disabled, false);
 });

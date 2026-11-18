@@ -1,0 +1,11 @@
+.paper-citations-body { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.paper-citation-search { display: flex; gap: 8px; align-items: center; }
+.paper-citation-search input, .paper-citation-target input { min-width: 0; width: 100%; padding: 9px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-control); }
+.paper-citation-results { display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; }
+.paper-citation-result { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-control); background: var(--surface-panel); color: var(--text-primary); text-align: left; }
+.paper-citation-result > span { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
+.paper-citation-result small, .paper-citation-hint { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.paper-citation-result.active { border-color: var(--accent); background: var(--surface-control-active); }
+.paper-citation-target { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.paper-citation-error { color: var(--state-danger); }
+@media (max-width: 600px) { .paper-citations-dialog .app-dialog-footer { flex-wrap: wrap; } }
