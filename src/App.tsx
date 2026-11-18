@@ -2573,10 +2573,6 @@ function App() {
       setSideThread(null);
       setWorkspaceDialog(null);
       setNewProjectOpen(false);
-      if (snapshot.workspace !== taskSelectionRef.current.dataRoot) {
-        setContextItems([]);
-        setComposerRequest(null);
-      }
       setWorkspace(snapshot.workspace);
       setProjects(snapshot.projects ?? []);
       setArchivedProjects(snapshot.archivedProjects ?? []);

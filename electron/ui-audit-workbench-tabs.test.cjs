@@ -73,7 +73,7 @@ test("Notes tab autosaves per conversation and sends into the composer", () => {
   assert.match(app, /noteStorageKey = `owner:\$\{composerDraftKey\}`/);
   assert.match(app, /noteKey = composerDraftKey/);
   assert.match(app, /getWorkbenchNote\(noteStorageKey\)/);
-  assert.match(app, /saveWorkbenchNote\(noteStorageKey, content\)/);
+  assert.match(app, /saveWorkbenchNote\(`owner:\$\{ownerKey\}`, content\)/);
   assert.match(app, /composerRequest.mode === "replace"/);
   assert.match(app, /function sendNoteToChat/);
   assert.match(css, /\.notes-editor/);
