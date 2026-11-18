@@ -1618,7 +1618,7 @@ function App() {
   // and paper writing operate inside the session folder: session snapshot →
   // project folder → primary workspace.
   const executionWorkspace = taskSelection.executionRoot;
-  const presentationSelection = newTaskSelection(workspace, activeProject, workspaces, activeWorkspace?.id);
+  const newPaperTask = newTaskSelection(workspace, activeProject, projectWorkspaces, activeWorkspaceId);
   const viewingRunningTask = agentBusy && (runningOwnerKey === composerDraftKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   const fileWorkspaceVersionRef = useRef(0);
@@ -3601,7 +3601,7 @@ function App() {
   // mount gating (keepMounted · cacheClass · requiresWorkspace · open gate)
   // comes from the module registry, not from scattered conditions.
   const sidebarModuleContent: Record<string, ReactNode> = {
-    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={executionWorkspace} workspaceId={activeWorkspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
+    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={newPaperTask.executionRoot} workspaceId={newPaperTask.workspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
     news: <NewsView chatTargetLabel={activeThread?.title || t("New conversation")} bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
@@ -3611,7 +3611,7 @@ function App() {
     "image-creation": <ImageCreationView active={mainSection === "image-creation"} onBrowseProceedings={() => { setDailyStartMode("conference"); setMainSection("daily"); }} />,
     "data-charts": <DataChartsView active={mainSection === "data-charts"} />,
     "data-analysis": <DataAnalysisView onAskAI={(text) => sendNoteToChat(text, "replace")} />,
-    "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={presentationSelection.executionRoot} dataRoot={workspace} projectId={presentationSelection.projectId} ownerKey={taskDraftKey(presentationSelection)} nativeConfig={nativeBackend} onOpenModelSettings={() => { setSettingsSection("models"); setSettingsOpen(true); }} onConfigureSetup={(text) => sendNoteToChat(text, "append")} active={mainSection === "paper-to-slides"} busy={agentBusy} manuscriptRequest={manuscriptRequests["paper-to-slides"]} onReturnToManuscript={returnToManuscript} onStart={(input) => startSlidesFromPaper(input, presentationSelection)} />,
+    "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={newPaperTask.executionRoot} dataRoot={workspace} projectId={newPaperTask.projectId} ownerKey={taskDraftKey(newPaperTask)} nativeConfig={nativeBackend} onOpenModelSettings={() => { setSettingsSection("models"); setSettingsOpen(true); }} onConfigureSetup={(text) => sendNoteToChat(text, "append")} active={mainSection === "paper-to-slides"} busy={agentBusy} manuscriptRequest={manuscriptRequests["paper-to-slides"]} onReturnToManuscript={returnToManuscript} onStart={(input) => startSlidesFromPaper(input, newPaperTask)} />,
     writing: <PaperWritingView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} openRequest={paperOpenRequest} onRefresh={refreshWorkspaceFiles} onAskAI={askAIAboutPaper} onHandoff={prepareManuscriptHandoff} active={mainSection === "writing"} />,
   };
   for (const entry of pluginEntries) {
