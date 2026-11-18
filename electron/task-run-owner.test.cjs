@@ -11,15 +11,17 @@ function extract(name) {
   return source.slice(start, start + 1 + end);
 }
 
-test("late run events and completion cannot adopt an empty task in another project", async () => {
+test("a first result adopts its own draft and cannot affect an empty task in another project", async () => {
   const helpers = await import("../src/task-selection.ts");
   const { transformWithOxc } = await import("vite");
   const selection = project => ({ dataRoot: "/data", projectId: project, workspaceId: `ws-${project}`, threadId: null, executionRoot: `/execution/${project}` });
   const resultThread = { id: "created-a", project_id: "a", workspace_id: "ws-a", workspace_path: "/execution/a", messages: [{ id: "a", text: "A response" }], events: [], turns: [], changeSets: [] };
   const bMessage = { id: "b", text: "B transcript" }, bAttachment = { id: "b-file" };
-  const state = { messages: [], events: [], threads: [], pending: null, context: [], error: "" };
+  const state = { messages: [], events: [], threads: [], pending: null, context: [], error: "", adoptions: [] };
+  const sourceKey = helpers.taskDraftKey(selection("a"));
+  const savedKey = helpers.taskDraftKey(helpers.threadTaskSelection("/data", resultThread, []));
   let resolve, receive, submitted;
-  const pending = new Promise(done => { resolve = done; });
+  let pending = new Promise(done => { resolve = done; });
   const update = key => value => { state[key] = typeof value === "function" ? value(state[key]) : value; };
   const scope = {
     ...helpers, crypto: global.crypto, t: value => value, workspaces: [],
@@ -28,9 +30,10 @@ test("late run events and completion cannot adopt an empty task in another proje
     taskSelectionRef: { current: selection("a") }, activeThreadIdRef: { current: null }, dataFolderLoadingRef: { current: false },
     activeRunRef: { current: null }, commandLockRef: { current: false }, noteValuesRef: { current: {} },
     threadsRef: { current: [resultThread] }, refreshingThreadsRef: { current: false },
-    setSelectionError: update("error"), setMessages: update("messages"), setEvents: update("events"), setThreads: update("threads"), setPendingAction: update("pending"), setContextItems: update("context"),
+    setSelectionError: update("error"), setMessages: update("messages"), setEvents: update("events"), setThreads: update("threads"), setPendingAction: update("pending"),
+    setContextItems(updater, key) { if (key === helpers.taskDraftKey(scope.taskSelectionRef.current)) state.context = updater(state.context); },
     setResearchMode() {}, clearPendingAssistantDeltas() {}, setRunningOwnerKey() {}, setRunningThreadId() {}, setAgentBusy() {}, setInterrupting() {}, setNativeStream() {}, setNativeQuestions() {}, setBoundHarness() {}, setTrajectoryEvents() {}, setChangeSets() {}, setArtifactsVersion() {},
-    updateComposer() {}, moveNewTaskComposer() {},
+    updateComposer() {}, moveNewTaskComposer(from, to) { state.adoptions.push([from, to]); },
     applyTaskSelection(next) { scope.taskSelectionRef.current = next; },
     desktopBridge: { runAgent(input) { submitted = input; return pending; }, onAgentEvent(callback) { receive = callback; return () => {}; } },
   };
@@ -56,6 +59,22 @@ test("late run events and completion cannot adopt an empty task in another proje
   assert.deepEqual(state.context, [bAttachment]);
   assert.equal(state.threads[0], resultThread);
   assert.equal(submitted.workspace, "/execution/a");
+  assert.deepEqual(state.adoptions, [[sourceKey, savedKey]]);
+
+  // The same completion while its composer is selected carries the later draft
+  // and the file attached during streaming into the newly saved session.
+  const consumed = { id: "first-file", name: "Initial readings" };
+  const followup = { id: "followup-file", name: "Follow-up notes" };
+  scope.taskSelectionRef.current = selection("a");
+  scope.contextItems = [consumed];
+  pending = new Promise(done => { resolve = done; });
+  const adopting = submitPrompt("A question");
+  state.context = [consumed, followup];
+  resolve({ threadId: "created-a", thread: resultThread, actions: [] });
+  assert.equal(await adopting, true);
+  assert.equal(scope.taskSelectionRef.current.threadId, "created-a");
+  assert.deepEqual(state.adoptions, [[sourceKey, savedKey], [sourceKey, savedKey]]);
+  assert.deepEqual(state.context, [followup]);
 });
 
 test("a delayed approval uses its original task for command execution and completion", async () => {
