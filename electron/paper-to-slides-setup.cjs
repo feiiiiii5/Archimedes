@@ -57,8 +57,12 @@ async function checkPaperToSlidesSetup(input = {}, { python, env = process.env, 
   catch { return { checks: [{ id: "dependency-probe", label: "Slide dependencies", status: "missing", detail: "The dependency check returned an unreadable report. Dependencies were not verified." }], canStart: false }; }
   const checks = [{ id: "python", label: "Python 3", status: "ready", detail: "The slide prerequisite script ran in the paper2anything Python environment." }];
   const add = (id, label, exists, required, detail) => checks.push({ id, label, status: exists ? "ready" : required ? "missing" : "optional", detail: exists ? "Found in the slide environment." : detail });
-  for (const name of ["node", "npm", "pdftoppm", "soffice"]) add(`command:${name}`, name, Boolean(report.commands?.[name]), ["node", "npm"].includes(name),
-    ["node", "npm"].includes(name) ? `Make ${name} available in the slide environment.` : `${name} is unavailable. PDF preview or visual QA may be limited.`);
+  for (const name of ["node", "npm"]) add(`command:${name}`, name, Boolean(report.commands?.[name]), true,
+    `Make ${name} available in the slide environment.`);
+  add("command:pdftoppm", "pdftoppm", Boolean(report.commands?.pdftoppm), true,
+    "Make Poppler's pdftoppm available in the slide environment. PDF parsing requires it.");
+  add("command:soffice", "soffice", Boolean(report.commands?.soffice), false,
+    "soffice is unavailable. PDF preview or visual QA may be limited.");
   for (const name of ["requests", "dotenv", "PIL", "markitdown"]) add(`python:${name}`, `Python ${name}`, report.python_packages?.[name] === true, REQUIRED_PYTHON.has(name),
     REQUIRED_PYTHON.has(name) ? `Add ${name} to the Python environment used by the slide skill.` : "Content QA is unavailable in this Python environment. Its results must not be claimed as checked.");
   for (const name of ["pptxgenjs", "react", "react-dom", "react-icons", "sharp"]) add(`node:${name}`, name, report.global_node_modules?.[name] === true, name === "pptxgenjs",

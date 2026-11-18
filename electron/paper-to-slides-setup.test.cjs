@@ -33,7 +33,7 @@ test("setup probes the documented Conda environment even when Electron uses a di
     calls.push({ command, args });
     assert.match(options.stdin, /global_node_modules/);
     return { exitCode: 0, stdout: JSON.stringify({
-      commands: { node: true, npm: true },
+      commands: { node: true, npm: true, pdftoppm: true },
       python_packages: { requests: true, dotenv: true, PIL: true },
       global_node_modules: { pptxgenjs: true },
     }) };
@@ -113,6 +113,13 @@ test("the real presence script can permit a limited generation environment while
   const isolatedPython = path.join(bin, "python3");
   fs.writeFileSync(isolatedPython, `#!/bin/sh\nexec '${python.replaceAll("'", "'\\''")}' -S "$@"\n`, { mode: 0o755 });
   const options = { python: isolatedPython, env: { PATH: bin, PYTHONPATH: modules } };
+  for (const backend of ["codex", "claude"]) {
+    const withoutRenderer = await checkPaperToSlidesSetup({ backend, hasTaskToken: true }, options);
+    assert.equal(withoutRenderer.canStart, false);
+    assert.deepEqual(withoutRenderer.checks.filter(check => check.status === "missing").map(check => check.id), ["command:pdftoppm"]);
+    assert.match(withoutRenderer.checks.find(check => check.id === "command:pdftoppm").detail, /PDF parsing requires it/);
+  }
+  fs.writeFileSync(path.join(bin, "pdftoppm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const limited = await checkPaperToSlidesSetup({ backend: "claude", hasTaskToken: true }, options);
   assert.equal(limited.checks.find(check => check.id === "command:soffice").status, "optional");
   assert.equal(limited.checks.find(check => check.id === "python:markitdown").status, "optional");
