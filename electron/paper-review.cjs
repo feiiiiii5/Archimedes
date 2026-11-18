@@ -355,6 +355,19 @@ function listRuns({ projectId = "", limit = 50, ownerDataRoot = "" } = {}) {
   return store.listRuns({ projectId, limit, ownerDataRoot });
 }
 
+function canAccessRun(run, dataStore, userId, role = "viewer") {
+  if (!run || (run.ownerDataRoot && run.ownerDataRoot !== dataStore.workspace)
+    || (run.projectId && !dataStore.canAccessProject(run.projectId, role))) return false;
+  const origin = run.manuscript;
+  if (!origin) return true;
+  if (Object.hasOwn(origin, "privateOwnerId")) return !origin.privateOwnerId || origin.privateOwnerId === userId;
+  if (!origin.threadId) return true;
+  // Older manuscript receipts did not record access. Honor the existing source
+  // conversation's visibility before returning them.
+  try { return dataStore.getResearchThread(origin.threadId).project_id === run.projectId; }
+  catch { return false; }
+}
+
 function deleteRun(runId) {
   const run = store.getRun(String(runId));
   const active = activeRuns.get(String(runId));
@@ -531,6 +544,7 @@ module.exports = {
   cancelRun,
   getRun,
   listRuns,
+  canAccessRun,
   deleteRun,
   exportRun,
   markdownForRun,

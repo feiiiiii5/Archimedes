@@ -64,7 +64,7 @@ test("review retains the real build with its generated run ID and keeps its data
     dataStore: f.owner, workspace: f.source, emit: event => { if (["complete", "error"].includes(event.type)) finished.resolve(event); },
   }));
   await entered.promise;
-  assert.deepEqual(reviews.getRun(started.runId).manuscript, f.origin);
+  assert.deepEqual(reviews.getRun(started.runId).manuscript, { ...f.origin, privateOwnerId: null });
   assert.equal(reviews.getRun(started.runId).ownerDataRoot, f.data);
   assert.ok(JSON.parse(fs.readFileSync(f.marker)).some(reference => reference.run_id === started.runId && reference.kind === "paper-review"));
   f.owner.close(); library.createWorkspaceStore(f.target); resume.resolve();
@@ -101,6 +101,30 @@ test("the global review database filters same-project-ID histories by data root 
   assert.deepEqual(visible.map(run => run.id).sort(), [local, legacy].sort());
   assert.equal(visible.find(run => run.id === legacy).manuscript, null);
   assert.deepEqual(reviews.getRun(local).manuscript, f.origin);
+});
+
+test("a private source review stays owner-only after the source conversation is deleted", async t => {
+  const f = await fixture(t), review = reviewModule(), finished = deferred();
+  t.after(() => f.owner.setLocalIdentity({ userId: f.thread.owner_id }));
+  review.initialize(path.join(f.root, "settings"));
+  f.owner.setResearchThreadVisibility(f.thread.id, "private");
+  f.owner.addProjectMember({ projectId: f.project.id, userId: "review-colleague", role: "viewer" });
+  const { runId } = await f.owner.run(() => review.createRun({ manuscript: f.origin }, {
+    dataStore: f.owner,
+    emit: event => { if (["complete", "error"].includes(event.type)) finished.resolve(event); },
+  }));
+  assert.equal((await finished.promise).type, "complete");
+  const run = review.getRun(runId);
+  assert.equal(run.manuscript.privateOwnerId, f.thread.owner_id);
+  assert.equal(review.canAccessRun(run, f.owner, f.thread.owner_id), true);
+  f.owner.deleteResearchThread(f.thread.id);
+  assert.equal(review.canAccessRun(run, f.owner, f.thread.owner_id), true);
+
+  f.owner.setLocalIdentity({ userId: "review-colleague" });
+  assert.equal(f.owner.canAccessProject(f.project.id, "viewer"), true);
+  const history = review.listRuns({ projectId: f.project.id, ownerDataRoot: f.data });
+  assert.equal(history.some(item => review.canAccessRun(item, f.owner, "review-colleague")), false);
+  assert.equal(review.canAccessRun(run, f.owner, "review-colleague"), false);
 });
 
 test("deleting a real review releases only its input pin, including after manuscript sources are removed", async t => {

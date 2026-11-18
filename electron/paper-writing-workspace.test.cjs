@@ -53,7 +53,7 @@ async function fixture(t, overrides = {}) {
   }
   const reads = [], writes = [], compiles = [];
   const preview = (root, name) => ({ name: path.basename(name), path: name, kind: "text", size: 100, modifiedAt: "now", content: fs.readFileSync(path.join(root, name), "utf8") });
-  let progress;
+  let progress, latestCompile;
   const bridge = {
     listLatexProjects: async root => overrides.listProjects ? overrides.listProjects(root) : require("./latex-workspace.cjs").listLatexProjects(root),
     listWorkspaceFiles: async (root, parent) => require("./workspace-files.cjs").listWorkspaceDirectory(root, parent),
@@ -68,7 +68,8 @@ async function fixture(t, overrides = {}) {
     },
     compileLatexDocument: async (root, name, requestId) => {
       compiles.push({ root, name, requestId });
-      return overrides.compile ? overrides.compile(root, name, requestId) : { ok: true, diagnostics: [], log: "fake build", duration_ms: 1 };
+      latestCompile = overrides.compile ? overrides.compile(root, name, requestId) : { ok: true, diagnostics: [], log: "fake build", duration_ms: 1 };
+      return latestCompile;
     },
     readManuscriptSnapshot: async (root, manifestPath) => overrides.readSnapshot ? overrides.readSnapshot(root, manifestPath) : require("./manuscript-snapshot.cjs").readManuscriptSnapshot(root, manifestPath),
     onLatexCompileProgress: callback => { progress = callback; return () => { progress = undefined; }; },
@@ -78,7 +79,7 @@ async function fixture(t, overrides = {}) {
     bridge, workspace, projectId: overrides.projectId || (workspace === a ? "a" : "b"), openRequest: token === null ? null : { path: filePath, token }, onRefresh() {}, onAskAI() {}, onHandoff: overrides.handoff,
   })));
   t.after(async () => { await React.act(async () => reactRoot.unmount()); fs.rmSync(directory, { recursive: true, force: true }); });
-  return { a, b, render, restart: async workspace => { await React.act(async () => reactRoot.unmount()); reactRoot = createRoot(document.getElementById("root")); await render(workspace, null); }, reads, writes, compiles, disk: root => fs.readFileSync(path.join(root, "paper/main.tex"), "utf8"), progress: event => progress?.(event) };
+  return { a, b, render, restart: async workspace => { await React.act(async () => reactRoot.unmount()); reactRoot = createRoot(document.getElementById("root")); await render(workspace, null); }, reads, writes, compiles, latestCompile: () => latestCompile, disk: root => fs.readFileSync(path.join(root, "paper/main.tex"), "utf8"), progress: event => progress?.(event) };
 }
 async function autoCompileOff() {
   const checkbox = document.querySelector('.paper-auto-compile input');
@@ -346,9 +347,12 @@ function compileSnapshotFixture(root, name) {
     return child;
   } });
 }
-async function compileCurrentSnapshot() {
+async function compileCurrentSnapshot(fixture) {
+  const previous = fixture.latestCompile();
   await click("Recompile");
-  for (let index = 0; index < 50 && document.querySelector(".paper-compile-state.compiling"); index++) await settle();
+  const pending = fixture.latestCompile();
+  assert.ok(pending && pending !== previous);
+  await React.act(async () => { await pending; });
   assert.ok(document.querySelector(".paper-compile-state.success"), document.body.textContent);
 }
 
@@ -357,14 +361,14 @@ test("Writing hands off only a fresh whole-manuscript snapshot and keeps source/
   const f = await fixture(t, { compile: compileSnapshotFixture, handoff: async (target, value) => handoffs.push({ target, source: value }) });
   await f.render(f.a); await autoCompileOff();
   await click("Review current PDF"); assert.equal(handoffs.length, 0); assert.match(document.body.textContent, /Compile the current manuscript/);
-  await compileCurrentSnapshot(); await click("Review current PDF");
+  await compileCurrentSnapshot(f); await click("Review current PDF");
   assert.equal(handoffs.length, 1); assert.equal(handoffs[0].target, "paper-review");
   assert.equal(handoffs[0].source.workspace, fs.realpathSync(f.a)); assert.equal(handoffs[0].source.mainPath, "paper/main.tex");
   assert.equal(handoffs[0].source.projectId, "a"); assert.match(handoffs[0].source.pdfSha256, /^[a-f0-9]{64}$/);
   assert.equal(require("./manuscript-snapshot.cjs").readManuscriptSnapshot(f.a, handoffs[0].source.manifestPath).current, true);
   fs.writeFileSync(path.join(f.a, "paper/refs.bib"), "Changed bibliography outside the open editor");
   await click("Review current PDF"); assert.equal(handoffs.length, 1); assert.match(document.body.textContent, /no longer matches/);
-  await compileCurrentSnapshot(); await edit(source("Unsaved newer main"));
+  await compileCurrentSnapshot(f); await edit(source("Unsaved newer main"));
   await click("Review current PDF"); assert.equal(handoffs.length, 1); assert.match(document.body.textContent, /Save and recompile/);
 });
 
@@ -374,7 +378,7 @@ test("a late snapshot check cannot hand off a newer unsaved editing version as i
     const verified = require("./manuscript-snapshot.cjs").readManuscriptSnapshot(root, manifestPath);
     await gate.promise; return verified;
   } });
-  await f.render(f.a); await autoCompileOff(); await compileCurrentSnapshot();
+  await f.render(f.a); await autoCompileOff(); await compileCurrentSnapshot(f);
   await React.act(async () => [...document.querySelectorAll("button")].find((button) => button.textContent === "Review current PDF").click());
   await edit(source("Typed during PDF verification")); gate.resolve();
   await React.act(async () => { await gate.promise; await new Promise((resolve) => setImmediate(resolve)); });

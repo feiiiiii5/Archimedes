@@ -899,8 +899,7 @@ app.whenReady().then(async () => {
       },
     });
   });
-  const reviewVisible = (run, role = "viewer") => Boolean(run && (!run.ownerDataRoot || run.ownerDataRoot === store.currentStore().workspace)
-    && (!run.projectId || store.canAccessProject(run.projectId, role)));
+  const reviewVisible = (run, role = "viewer") => paperReview.canAccessRun(run, store.currentStore(), localIdentity.localIdentity().userId, role);
   const requireReview = (runId, role = "viewer") => {
     const run = paperReview.getRun(runId);
     if (!reviewVisible(run, role)) throw new Error("This review is not available in the current project workspace.");

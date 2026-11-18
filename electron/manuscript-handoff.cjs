@@ -19,6 +19,7 @@ function verifyManuscriptOrigin(store, input) {
   const { workspacePath } = require("./workspace-files.cjs");
   const selected = workspacePath(root, typeof input.selectedPath === "string" ? input.selectedPath : checked.source_path);
   return { dataRoot: store.workspace, projectId: project.id, workspaceId: workspace.id, threadId: thread?.id || null,
+    privateOwnerId: thread?.visibility === "private" ? thread.owner_id : null,
     workspace: root, mainPath: checked.source_path, selectedPath: path.relative(root, selected).split(path.sep).join("/"),
     manifestPath: checked.manifest_path, sourceVersion: checked.requested_source.source_version,
     pdfPath: checked.pdf.path, pdfSha256: checked.pdf.sha256, buildId: checked.build_id };
