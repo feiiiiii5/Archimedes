@@ -1,4 +1,4 @@
-import type { AnalysisChatInput, ProjectResultsBridge } from "./project-results";
+import { analysisDiscussionMissing, type AnalysisChatInput, type ProjectResultsBridge } from "./project-results";
 import { appendComposerText, getComposerSession, resolveComposerKey, updateComposerSession, type ComposerKeyAliases, type ComposerRequest, type ComposerSessions } from "./composer-session";
 import { analysisOwnerKey, newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
@@ -729,7 +729,7 @@ const previewBridge = {
   getResearchTurnImage: async (threadId: string, turnId: string, position: number) => previewThreads.find((thread) => thread.id === threadId)?.messages.find((message) => message.turn_id === turnId && message.role === "user")?.attachments?.find((item) => item.position === position)?.imageData ?? null,
   getResearchThread: async (threadId: string) => {
     const thread = previewThreads.find((candidate) => candidate.id === threadId);
-    if (!thread) throw new Error("Research session not found.");
+    if (!thread) throw new Error("Research thread not found.");
     return structuredClone(thread);
   },
   saveTask: async ({ prompt, response, status = "completed" }: { prompt: string; response: string; status?: string }) => {
@@ -2056,10 +2056,18 @@ function App() {
     if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot) throw new Error(t("Return to the analysis data folder before attaching its source."));
     let pending = analysisHandoffsRef.current.get(sessionKey);
     if (!pending) {
-      const threadId = input.threadId || analysisSessionsRef.current.get(sessionKey);
-      pending = threadId
-        ? desktopBridge.getResearchThread(threadId, owner.dataRoot)
-        : desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId || undefined, workspacePath: sessionOwner.executionRoot, basedOnResultId: result?.id, mode: "free-chat", title: `${t("Data analysis")}: ${input.name}` });
+      const threadId = result ? result.threadId : analysisSessionsRef.current.get(sessionKey) || input.threadId;
+      pending = (async () => {
+        if (threadId) {
+          try { return await desktopBridge.getResearchThread(threadId, owner.dataRoot); }
+          catch (error) {
+            if (!analysisDiscussionMissing(error)) throw error;
+            analysisSessionsRef.current.delete(sessionKey);
+          }
+        }
+        if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot) throw new Error(t("Return to the analysis data folder before attaching its source."));
+        return desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId || undefined, workspacePath: sessionOwner.executionRoot, basedOnResultId: result?.id, mode: "free-chat", title: `${t("Data analysis")}: ${input.name}` });
+      })();
       analysisHandoffsRef.current.set(sessionKey, pending);
     }
     let thread: ResearchThreadDetail;

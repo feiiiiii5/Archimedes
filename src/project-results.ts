@@ -15,3 +15,7 @@ export type ProjectResultsBridge = {
 };
 
 export type AnalysisChatInput = { id: string; name: string; threadId?: string | null; resultId?: string; sourcePath?: string; attachSource?: boolean };
+
+export function analysisDiscussionMissing(error: unknown) {
+  return error instanceof Error && error.message.endsWith("Research thread not found.");
+}

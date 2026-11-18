@@ -6,7 +6,7 @@ import { buildPlot, dateValue, parseDelimited, profileDataset, summarizeColumn, 
 import { analysisExamples, type AnalysisExample } from "./data-analysis-examples";
 import { DataAnalysisPlot, formatAnalysisNumber as format } from "./DataAnalysisPlot";
 import "./data-analysis.css";
-import type { AnalysisChatInput, ProjectResultDetail, ProjectResultOwner, ProjectResultsBridge, ProjectResultSummary } from "./project-results";
+import { analysisDiscussionMissing, type AnalysisChatInput, type ProjectResultDetail, type ProjectResultOwner, type ProjectResultsBridge, type ProjectResultSummary, type SaveProjectResultInput } from "./project-results";
 
 function initialData() { return parseDelimited(analysisExamples[0].csv, ","); }
 const PAGE_SIZE = 50;
@@ -144,20 +144,27 @@ export default function DataAnalysisView({ ownerKey = "preview", owner, bridge, 
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function saveResult(threadId = state.threadId, resultId = state.resultId): Promise<ProjectResultDetail> {
+  async function saveResult(): Promise<ProjectResultDetail> {
     if (!owner || !bridge) throw new Error(t("Select a project workspace to save an analysis."));
+    const { resultId, threadId } = state;
     const savedVersion = editVersions.current.get(ownerKey) ?? 0;
     setField("saving", true); setError("");
     try {
       const sourceName = /\.tsv$/i.test(name) ? "source.tsv" : "source.csv", svg = chartSvg();
       if (activeInputRef.current.ownerKey !== ownerKey) throw new Error(t("Analysis was not saved. Return to this project and save its draft."));
-      const saved = await bridge.saveProjectResult({ id: resultId || undefined, projectId: owner.projectId, workspaceId: owner.workspaceId, threadId, kind: "analysis", title: `${name} · ${config.type}`, manifest: {
+      const payload: SaveProjectResultInput = { id: resultId || undefined, projectId: owner.projectId, workspaceId: owner.workspaceId, threadId: resultId ? undefined : threadId, kind: "analysis", title: `${name} · ${config.type}`, manifest: {
         version: 1, source: { name, file: sourceName, inputId, format: sourceName.endsWith("tsv") ? "tsv" : "csv" },
         config, selectedColumn: column, tab, question, exampleId, presetIndex, statistics: { rows: dataset.rows.length, columns: dataset.headers.length, missingCells: missing, selectedColumn: summary, correlation: plot.correlation }, ...(svg ? { output: { file: "plot.svg"} } : {}),
-      }, files: [{ name: sourceName, role: "source", encoding: "utf8", content: state.sourceText }, ...(svg ? [{ name: "plot.svg", role: "output" as const, encoding: "utf8" as const, content: svg }] : [])] });
+      }, files: [{ name: sourceName, role: "source", encoding: "utf8", content: state.sourceText }, ...(svg ? [{ name: "plot.svg", role: "output", encoding: "utf8", content: svg }] as const : [])] };
+      let saved: ProjectResultDetail;
+      try { saved = await bridge.saveProjectResult(payload); }
+      catch (error) {
+        if (!payload.threadId || !analysisDiscussionMissing(error) || activeInputRef.current.ownerKey !== ownerKey) throw error;
+        saved = await bridge.saveProjectResult({ ...payload, threadId: null });
+      }
       setOwnerStates((current) => {
         const previous = current[ownerKey] ?? emptyState;
-        return previous.inputId === inputId && (editVersions.current.get(ownerKey) ?? 0) === savedVersion ? { ...current, [ownerKey]: { ...previous, resultId: saved.id, threadId, notice: t("Analysis snapshot saved to this project.") } } : current;
+        return previous.inputId === inputId && (editVersions.current.get(ownerKey) ?? 0) === savedVersion ? { ...current, [ownerKey]: { ...previous, resultId: saved.id, threadId: saved.threadId, notice: t("Analysis snapshot saved to this project.") } } : current;
       });
       // The list request is routed through the active data directory. If the
       // user moved to another directory while saving, refreshing here would

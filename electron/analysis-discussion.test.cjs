@@ -14,7 +14,7 @@ function extract(name) {
 const owner = project => ({ dataRoot: '/data', projectId: project, workspaceId: `ws-${project}`, threadId: project, executionRoot: `/physical/${project}` });
 const thread = (id, project = id) => ({ id, project_id: project, workspace_id: `ws-${project}`, workspace_path: `/physical/${project}`, messages: [], events: [], turns: [], changeSets: [] });
 async function callbacks(names, overrides = {}) {
-  const helpers = { ...await import('../src/task-selection.ts'), ...await import('../src/composer-session.ts') };
+  const helpers = { ...await import('../src/task-selection.ts'), ...await import('../src/composer-session.ts'), ...await import('../src/project-results.ts') };
   const state = { sessions: {}, displayed: [], messages: [], events: [], threads: [], busy: false };
   const scope = {
     ...helpers, crypto: global.crypto, t: text => text,
@@ -71,5 +71,40 @@ test('analysis creation failure keeps its source intact and a late success canno
   await assert.rejects(h.continueAnalysisInChat('New input question', { id: 'csv-2', name: 'data.csv' }, owner('a'), () => true), /creation failed/);
   assert.equal(h.scope.taskSelectionRef.current.threadId, 'a');
   assert.equal(h.state.sessions[h.key('a')], undefined);
+});
+
+test('a deleted discussion can be replaced for a live draft and a saved analysis', async () => {
+  const removed = new Set();
+  const lookedUp = [];
+  let creates = 0;
+  const result = { id: 'saved-result', threadId: null, kind: 'analysis', projectId: 'a', workspaceId: 'ws-a', executionRoot: '/physical/a', fileState: 'ready' };
+  const h = await callbacks(['queueComposerText', 'continueAnalysisInChat'], { desktopBridge: {
+    createResearchThread: async input => {
+      const id = `analysis-${++creates}`;
+      if (input.basedOnResultId) result.threadId = id;
+      return thread(id, input.projectId);
+    },
+    getResearchThread: async id => {
+      lookedUp.push(id);
+      if (removed.has(id)) throw new Error("Error invoking remote method 'research-thread:get': Error: Research thread not found.");
+      return thread(id, 'a');
+    },
+    getProjectResult: async () => ({ ...result }),
+  } });
+  const complete = (input) => h.continueAnalysisInChat('Keep investigating', { id: 'csv', name: 'data.csv', ...input }, owner('a'), () => true);
+  const original = await complete({});
+  removed.add(original);
+  const replacement = await complete({ threadId: original });
+  assert.notEqual(original, replacement);
+  assert.equal(await complete({ threadId: original }), replacement, 'the current in-memory association wins for an unsaved draft');
+
+  const savedDiscussion = await complete({ resultId: result.id, threadId: original });
+  removed.add(savedDiscussion);
+  result.threadId = null; // The store clears the saved association when the discussion is deleted.
+  const savedReplacement = await complete({ resultId: result.id, threadId: savedDiscussion });
+  assert.notEqual(savedReplacement, savedDiscussion);
+  assert.equal(result.threadId, savedReplacement);
+  assert.equal(await complete({ resultId: result.id }), savedReplacement);
+  assert.deepEqual(lookedUp, [original, replacement, savedReplacement], 'a cleared persisted ID beats the stale component and session-cache IDs');
 });
 
