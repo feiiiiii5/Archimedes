@@ -63,3 +63,16 @@ test("an attachment without a branch means the default checkout", () => {
   assert.equal(checkoutBranchOf({ checkout: null }), "");
   assert.equal(checkoutBranchOf(null), "");
 });
+
+test("paper repository tools read the library checkout when task execution uses another folder", async t => {
+  const execution = workspace(), library = workspace();
+  t.after(() => { fs.rmSync(execution, { recursive: true, force: true }); fs.rmSync(library, { recursive: true, force: true }); });
+  makeCheckout(checkoutDirectory(library, URL, "").root, { "methods.txt": "Recorded method" });
+  const agent = require("./agent.cjs");
+  const result = await agent.executeTool({
+    root: execution, repositoryWorkspace: library, dataStore: {}, emit() {},
+    contextItems: [{ id: "paper-repo", type: "repository", repository: { url: URL, checkout: { branch: "main", commit: "fixture" } } }],
+    call: { id: "read-method", type: "function", function: { name: "read_attached_repository_file", arguments: JSON.stringify({ attachment_id: "paper-repo", path: "methods.txt" }) } },
+  });
+  assert.equal(JSON.parse(result.content).content, "Recorded method");
+});
