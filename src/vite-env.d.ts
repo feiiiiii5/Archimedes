@@ -102,7 +102,7 @@ interface ResearchDeskBridge {
     readManuscriptSnapshot?: (workspace: string, manifestPath: string) => Promise<import("./manuscript-snapshot").ManuscriptBuildVerification>;
     getResearchTurnImage: (threadId: string, turnId: string, position: number, workspace?: string) => Promise<string | null>;
     getResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
-    createResearchThread: (input: { projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
+    createResearchThread: (input: { basedOnThreadId?: string; projectId?: string; workspacePath?: string; workspaceId?: string; mode?: ResearchMode; visibility?: "project" | "private"; title?: string }) => Promise<ResearchThreadDetail>;
     forkResearchThread: (threadId: string, workspace?: string, side?: boolean) => Promise<ResearchThreadDetail>;
     undoResearchTurn: (threadId: string, workspace?: string) => Promise<{ thread: ResearchThreadDetail; prompt: string; backupThreadId: string }>;
     compactResearchThread: (threadId: string, workspace?: string) => Promise<ResearchThreadDetail>;
@@ -278,7 +278,7 @@ interface ResearchDeskBridge {
     listPaperReviewPapers: (input?: { workspace?: string; projectId?: string }) => Promise<PaperReviewPaperSummary[]>;
     choosePaperReviewPdf: () => Promise<string>;
     stagePaperToSlidesPdf: (workspace: string, path: string) => Promise<string>;
-    createPaperReviewRun: (input: PaperReviewCreateInput) => Promise<{ runId: string; document: PaperReviewDocumentSummary | null; venue: { id: string; displayName: string; version: string }; model: string }>;
+    createPaperReviewRun: (input: PaperReviewCreateInput) => Promise<{ runId: string; document: PaperReviewDocumentSummary | null; venue: { id: string; displayName: string; version: string }; model: string; manuscript?: import("./manuscript-handoff").ManuscriptOrigin | null }>;
     getPaperReviewRun: (runId: string) => Promise<PaperReviewRunSummary | null>;
     listPaperReviewRuns: (input?: { projectId?: string; limit?: number }) => Promise<PaperReviewRunSummary[]>;
     cancelPaperReviewRun: (runId: string) => Promise<{ cancelled: boolean }>;
@@ -534,6 +534,7 @@ type PaperReviewSource =
   | { kind: "pdf"; filePath: string };
 
 interface PaperReviewCreateInput {
+  manuscript?: import("./manuscript-handoff").ManuscriptOrigin;
   source: PaperReviewSource;
   venueId?: string;
   workspace?: string;
@@ -664,6 +665,8 @@ interface PaperReviewResult {
 }
 
 interface PaperReviewRunSummary {
+  ownerDataRoot?: string;
+  manuscript?: import("./manuscript-handoff").ManuscriptOrigin | null;
   id: string;
   documentId: string;
   projectId: string;
@@ -1730,6 +1733,7 @@ interface ResearchComment {
 }
 
 interface ResearchThread {
+  based_on_thread_id?: string | null;
   id: string;
   kind?: "research" | "paper";
   harness?: "api" | "codex" | "claude" | "opencode" | null;

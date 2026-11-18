@@ -42,6 +42,7 @@ export function createWritingScope(workspace: string) {
     compileElapsed: 0,
     compilePhase: "Preparing compiler",
     compileState: "idle" as "idle" | "compiling" | "success" | "error",
+    handoffBusy: false,
     compileResult: null as LatexCompileResult | null,
     activeProblem: null as number | null,
     activationSequence: 0,

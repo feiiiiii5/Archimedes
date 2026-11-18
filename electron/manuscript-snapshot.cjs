@@ -219,7 +219,38 @@ function readManuscriptSnapshot(root, manifestPath) {
   };
 }
 
-/** Retain five PDF previews and five log-only receipts per document. */
+/** Called when a real review/slides run takes ownership, never for a preview. */
+function pinManuscriptSnapshot(root, manifestPath, reference) {
+  if (!["paper-review", "paper-to-slides"].includes(reference?.kind) || typeof reference.run_id !== "string" || !reference.run_id.trim() || reference.run_id.length > 200) throw new Error("A review or slides run ID is required to retain this manuscript build.");
+  const checked = readManuscriptSnapshot(root, manifestPath);
+  if (!checked.current) throw new Error("This manuscript build is no longer current. Save and compile again before handing it off.");
+  const file = path.join(path.dirname(workspacePath(checked.workspace, manifestPath)), "retained-inputs.json");
+  const references = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  if (!references.some(item => item.kind === reference.kind && item.run_id === reference.run_id)) {
+    references.push({ kind: reference.kind, run_id: reference.run_id, created_at: new Date().toISOString() });
+    fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(references, null, 2)}\n`);
+    fs.renameSync(`${file}.tmp`, file);
+  }
+  return checked;
+}
+
+/** Release a reference after failed creation or explicit deletion; cancellation keeps it. */
+function unpinManuscriptSnapshot(root, manifestPath, reference) {
+  if (!/^\.archimedes\/latex-build\/[a-f0-9]+\/[a-f0-9-]+\/source-snapshot\.json$/.test(manifestPath)) throw new Error("Choose a saved manuscript build snapshot.");
+  let directory;
+  try { directory = workspacePath(root, path.posix.dirname(manifestPath)); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  const file = path.join(directory, "retained-inputs.json");
+  if (!fs.existsSync(file)) return;
+  const references = JSON.parse(fs.readFileSync(file, "utf8")).filter(item => item.kind !== reference.kind || item.run_id !== reference.run_id);
+  if (!references.length) fs.rmSync(file);
+  else {
+    fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(references, null, 2)}\n`);
+    fs.renameSync(`${file}.tmp`, file);
+  }
+}
+
+/** Retain up to five unreferenced PDF previews and five unreferenced log-only receipts per document. */
 function pruneManuscriptPreviews(root, manifestPath, keep = 5) {
   const workspace = workspacePath(root), currentFile = workspacePath(workspace, manifestPath);
   const current = JSON.parse(fs.readFileSync(currentFile, "utf8"));
@@ -228,7 +259,7 @@ function pruneManuscriptPreviews(root, manifestPath, keep = 5) {
   for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[a-f0-9-]+$/.test(entry.name)) continue;
     const directory = path.join(parent, entry.name), manifest = path.join(directory, "source-snapshot.json");
-    if (!fs.existsSync(manifest)) continue;
+    if (!fs.existsSync(manifest) || fs.existsSync(path.join(directory, "retained-inputs.json"))) continue;
     try {
       const snapshot = JSON.parse(fs.readFileSync(manifest, "utf8"));
       if (snapshot.workspace !== workspace || snapshot.source_path !== current.source_path) continue;
@@ -245,4 +276,4 @@ function pruneManuscriptPreviews(root, manifestPath, keep = 5) {
   return { removed, errors };
 }
 
-module.exports = { captureManuscriptSources, fileDigest, writeManuscriptSnapshot, readManuscriptSnapshot, pruneManuscriptPreviews, watchManuscriptDirectory };
+module.exports = { captureManuscriptSources, fileDigest, writeManuscriptSnapshot, readManuscriptSnapshot, pinManuscriptSnapshot, unpinManuscriptSnapshot, pruneManuscriptPreviews, watchManuscriptDirectory };

@@ -46,9 +46,11 @@ trees need a dedicated paper folder. Hashing streams each file through a
 64 KiB buffer. Requests and completed builds incur source reads; the receipt
 does not establish that large workspaces have negligible latency.
 
-After each build, Archimedes keeps the five most recent completed previews for
-that main document. Directories without a completed receipt are left alone,
-including ongoing builds. `preview_cleanup` reports removed directories and any
+After each build, Archimedes keeps the five most recent unreferenced completed
+previews for that main document. A real manuscript review run retains its
+input PDF/log/receipt separately from those previews. Directories without a
+completed receipt are left alone, including ongoing builds. `preview_cleanup`
+reports removed directories and any
 cleanup errors; a failure to remove an old preview does not invalidate an
 otherwise successful compile. The shared runtime `tex-cache` and `xdg-cache`
 contain downloaded TeX dependencies separately from manuscript output. Preview

@@ -633,6 +633,7 @@ function schema(db) {
   ensureColumn(db, "research_threads", "pinned", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "research_threads", "last_viewed_at", "TEXT");
   ensureColumn(db, "research_threads", "unread_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "research_threads", "based_on_thread_id", "TEXT REFERENCES research_threads(id) ON DELETE SET NULL");
   // Artifact metadata records where a produced file lives without moving it.
   ensureColumn(db, "research_artifacts", "project_id", "TEXT");
   ensureColumn(db, "research_artifacts", "storage", "TEXT NOT NULL DEFAULT 'local'");
@@ -2536,8 +2537,15 @@ function createResearchThread({
   title,
   parentId = null,
   forkId = null,
+  basedOnThreadId = null,
 } = {}) {
   const db = requireDatabase();
+  const basedOn = basedOnThreadId ? getResearchThread(basedOnThreadId) : null;
+  if (basedOn) {
+    if ((projectId && projectId !== basedOn.project_id) || (workspaceId && workspaceId !== basedOn.workspace_id)) throw new Error("The source conversation does not belong to this project workspace.");
+    if (workspacePath && normalizeWorkspacePath(workspacePath) !== normalizeWorkspacePath(basedOn.workspace_path)) throw new Error("The execution folder does not match the source conversation.");
+    projectId = basedOn.project_id; workspaceId = basedOn.workspace_id; workspacePath = basedOn.workspace_path;
+  }
   const selectedProject = projectId
     ? db.prepare("SELECT id, workspace_path FROM research_projects WHERE id = ? AND archived_at IS NULL").get(projectId)
     : null;
@@ -2579,14 +2587,15 @@ function createResearchThread({
     created_at: now,
     updated_at: now,
     archived_at: null,
+    based_on_thread_id: basedOn?.id || null,
   };
   db.prepare(`
-    INSERT INTO research_threads (id, project_id, owner_id, visibility, title, mode, status, context_summary, workspace_path, workspace_id, parent_id, fork_id, pinned, last_viewed_at, unread_count, created_at, updated_at, kind)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?)
+    INSERT INTO research_threads (id, project_id, owner_id, visibility, title, mode, status, context_summary, workspace_path, workspace_id, parent_id, fork_id, pinned, last_viewed_at, unread_count, created_at, updated_at, kind, based_on_thread_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, ?)
   `).run(
     thread.id, thread.project_id, thread.owner_id, thread.visibility, thread.title, thread.mode,
     thread.status, thread.context_summary, thread.workspace_path, thread.workspace_id,
-    thread.parent_id, thread.fork_id, thread.created_at, thread.updated_at, thread.kind,
+    thread.parent_id, thread.fork_id, thread.created_at, thread.updated_at, thread.kind, thread.based_on_thread_id,
   );
   db.prepare("UPDATE research_projects SET updated_at = ? WHERE id = ?").run(now, resolvedProjectId);
   if (workspace?.id) setWorkspaceLastSession(workspace.id, thread.id);
