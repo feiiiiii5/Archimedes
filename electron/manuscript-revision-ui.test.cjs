@@ -88,4 +88,18 @@ test("owner-only review feedback stays private after its source is shared, and a
   assert.equal(replacementThread.visibility, "private");
   assert.equal(f.drafts.get(f.taskDraftKey(replacement)).text, "A finding after archiving");
   assert.match(f.drafts.get(key).text, /^USER_REVISION_NOTES/);
+
+  f.database.deleteResearchThread(f.selection.threadId);
+  await open(privateReceipt, "A finding after source deletion", "revision");
+  assert.equal(f.scope.taskSelectionRef.current.threadId, replacement.threadId);
+  assert.match(f.drafts.get(f.taskDraftKey(replacement)).text, /A finding after source deletion/);
+
+  f.database.archiveResearchThread(replacement.threadId);
+  f.database.setResearchProjectWorkspace(f.project.id, f.oldRoot);
+  f.scope.workspaces = f.database.listProjectWorkspaces(f.project.id);
+  await open(privateReceipt, "A new revision without the source chat", "revision");
+  const withoutSource = f.database.getResearchThread(f.scope.taskSelectionRef.current.threadId);
+  assert.notEqual(withoutSource.id, replacement.threadId);
+  assert.equal(withoutSource.visibility, "private");
+  assert.equal(withoutSource.based_on_thread_id, null);
 });

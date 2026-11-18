@@ -3152,7 +3152,13 @@ function App() {
     if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== source.dataRoot) throw new Error(t("Return to the manuscript data folder before continuing."));
     const origin = taskSelectionRef.current;
     const originKey = taskDraftKey(origin);
-    const sourceThread = source.threadId ? await desktopBridge.getResearchThread(source.threadId, source.dataRoot) : null;
+    let sourceThread: ResearchThreadDetail | null = null;
+    if (source.threadId) {
+      try { sourceThread = await desktopBridge.getResearchThread(source.threadId, source.dataRoot); }
+      catch (reason) {
+        if (kind !== "revision" || !Object.hasOwn(source, "privateOwnerId") || !/Research thread not found/i.test(String(reason))) throw reason;
+      }
+    }
     const visibility = source.privateOwnerId || threadVisibility === "private" || sourceThread?.visibility === "private" ? "private" : "project";
     const privateScope = visibility === "private" ? [visibility, source.threadId || origin.threadId] : [];
     const cacheKey = `archimedes-manuscript-chat:${JSON.stringify([source.dataRoot, source.projectId, source.workspaceId, source.workspace, source.mainPath, kind, ...privateScope])}`;
@@ -3169,7 +3175,7 @@ function App() {
           catch (reason) { if (!/not found|no longer exists/i.test(String(reason))) throw reason; }
         }
         if (taskSelectionRef.current.dataRoot !== source.dataRoot || dataFolderLoadingRef.current) throw new Error(t("Return to the manuscript data folder before continuing."));
-        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: source.threadId || undefined, visibility, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
+        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: sourceThread?.archived_at ? undefined : sourceThread?.id, visibility, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
       })();
       manuscriptChatsRef.current.set(cacheKey, pending);
     }
