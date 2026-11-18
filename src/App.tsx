@@ -2,6 +2,7 @@ import { analysisDiscussionMissing, type AnalysisChatInput, type ProjectResultsB
 import { appendComposerText, getComposerSession, resolveComposerKey, updateComposerSession, type ComposerKeyAliases, type ComposerRequest, type ComposerSessions } from "./composer-session";
 import { analysisOwnerKey, newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import { WorkspaceMarkdownLink, WorkspaceMarkdownProvider, workspaceMarkdownUrlTransform } from "./WorkspaceMarkdownLink";
 import remarkGfm from "remark-gfm";
@@ -1414,6 +1415,7 @@ function App() {
   const [workspace, setWorkspace] = useState(DEFAULT_WORKSPACE);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [workspaceOpenError, setWorkspaceOpenError] = useState("");
+  const workspaceOpeningDialogRef = useRef<HTMLDialogElement>(null);
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [archivedProjects, setArchivedProjects] = useState<ResearchProject[]>([]);
   const [threads, setThreads] = useState<ResearchThread[]>([]);
@@ -2505,55 +2507,82 @@ function App() {
   }, [activeProjectId, agentBusy, projects, workspaces]);
 
   async function chooseWorkspace() {
-    if (agentBusy || sideBusy || commandLockRef.current) return;
+    if (agentBusy || sideBusy || commandLockRef.current || workspaceOpeningDialogRef.current?.open) return;
     const selected = await desktopBridge.chooseWorkspace();
     if (selected) await loadWorkspace(selected);
   }
 
   async function loadWorkspace(workspacePath: string) {
-    if (agentBusy || activeRunRef.current || sideBusy || commandLockRef.current || dataFolderLoadingRef.current) return;
+    const opening = workspaceOpeningDialogRef.current;
+    if (!opening || opening.open || agentBusy || activeRunRef.current || sideBusy || commandLockRef.current || dataFolderLoadingRef.current) return;
     if (hasDirtyFileEditorScopes(fileEditorScopesRef.current) && !(await confirm({ title: "Discard unsaved changes?", description: "Artifact changes that have not been saved will be lost.", confirmLabel: "Discard changes", destructive: true }))) return;
-    const requestId = ++threadOpenRequestRef.current;
+    if (opening.open || activeRunRef.current || commandLockRef.current) return;
+    // The native modal blocks stale controls, including portaled dialogs, before IPC.
+    opening.showModal();
+    threadOpenRequestRef.current += 1;
     dataFolderLoadingRef.current = true;
-    let opened = false;
     try {
-      const snapshot = await desktopBridge.openWorkspace(workspacePath);
-      opened = true;
-      setWorkspaceOpenError("");
-      setWorkspaceReady(false);
-      const knownProjects = new Set((snapshot.projects ?? []).map((project) => project.id));
-      const rememberedProject = readPreferredProject(snapshot.workspace);
-      let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
-      if (!restoreProjectId && snapshot.threads.length && typeof desktopBridge.listLibraryProjects === "function") {
-        const summary = await desktopBridge.listLibraryProjects().catch(() => []);
-        const recentHasPapers = summary.some((entry) => entry.project_id === snapshot.threads[0].project_id && entry.paper_count > 0);
-        if (!recentHasPapers) restoreProjectId = summary.find((entry) => entry.paper_count > 0 && knownProjects.has(entry.project_id))?.project_id ?? null;
+      await openDataWorkspace(workspacePath);
+    } finally {
+      dataFolderLoadingRef.current = false;
+      opening.close();
+    }
+  }
+
+  async function openDataWorkspace(workspacePath: string) {
+    const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+      .replace(/^Error invoking remote method '[^']+':\s*/i, "").replace(/^Error:\s*/i, "");
+    const snapshot = await desktopBridge.openWorkspace(workspacePath).catch(error => {
+      setWorkspaceOpenError(errorMessage(error));
+      return null;
+    });
+    if (!snapshot) return;
+    flushSync(() => setWorkspaceReady(false));
+    const readErrors: string[] = [];
+    const knownProjects = new Set((snapshot.projects ?? []).map(project => project.id));
+    const rememberedProject = readPreferredProject(snapshot.workspace);
+    let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
+    if (!restoreProjectId && snapshot.threads.length && typeof desktopBridge.listLibraryProjects === "function") {
+      const summary = await desktopBridge.listLibraryProjects().catch(() => []);
+      const recentHasPapers = summary.some(entry => entry.project_id === snapshot.threads[0].project_id && entry.paper_count > 0);
+      if (!recentHasPapers) restoreProjectId = summary.find(entry => entry.paper_count > 0 && knownProjects.has(entry.project_id))?.project_id ?? null;
+    }
+    const restoreThread = restoreProjectId
+      ? snapshot.threads.find(candidate => candidate.project_id === restoreProjectId) ?? null
+      : snapshot.threads[0] ?? null;
+    const spaces = snapshot.workspaces ?? [];
+    const nextProjectId = restoreProjectId ?? restoreThread?.project_id ?? snapshot.projects?.[0]?.id ?? null;
+    let next = newTaskSelection(snapshot.workspace, snapshot.projects.find(project => project.id === nextProjectId) ?? null, spaces);
+    let thread: ResearchThreadDetail | null = null;
+    if (restoreThread) {
+      try {
+        const restored = await desktopBridge.getResearchThread(restoreThread.id, snapshot.workspace);
+        next = threadTaskSelection(snapshot.workspace, restored, spaces);
+        thread = restored;
+      } catch (error) {
+        readErrors.push(`${t("Could not open this research chat.")} ${errorMessage(error)}`);
       }
-      const restoreThread = restoreProjectId
-        ? snapshot.threads.find((candidate) => candidate.project_id === restoreProjectId) ?? null
-        : snapshot.threads[0] ?? null;
-      let thread: ResearchThreadDetail | null = null;
-      let openingError = "";
-      if (restoreThread) {
-        try { thread = await desktopBridge.getResearchThread(restoreThread.id, snapshot.workspace); }
-        catch (error) { openingError = `${t("Could not open this research chat.")} ${String(error)}`; }
-      }
-      if (requestId !== threadOpenRequestRef.current) return;
-      const nextProjectId = restoreProjectId ?? restoreThread?.project_id ?? snapshot.projects?.[0]?.id ?? null;
-      const next = thread ? threadTaskSelection(snapshot.workspace, thread, snapshot.workspaces ?? [])
-        : newTaskSelection(snapshot.workspace, snapshot.projects.find((entry) => entry.id === nextProjectId) ?? null, snapshot.workspaces ?? []);
-      const nextTree = await desktopBridge.listWorkspaceFiles(next.executionRoot).catch(() => ({ entries: [], count: 0, truncated: false }));
-      if (requestId !== threadOpenRequestRef.current) return;
+    }
+    const nextTree = await desktopBridge.listWorkspaceFiles(next.executionRoot).catch(error => {
+      readErrors.push(errorMessage(error));
+      return { entries: [], count: 0, truncated: false };
+    });
+
+    flushSync(() => {
       clearPendingAssistantDeltas();
       setSideThread(null);
       setWorkspaceDialog(null);
       setNewProjectOpen(false);
+      if (snapshot.workspace !== taskSelectionRef.current.dataRoot) {
+        setContextItems([]);
+        setComposerRequest(null);
+      }
       setWorkspace(snapshot.workspace);
       setProjects(snapshot.projects ?? []);
       setArchivedProjects(snapshot.archivedProjects ?? []);
       setThreads(snapshot.threads);
       setArchivedThreads(snapshot.archivedThreads ?? []);
-      setWorkspaces(snapshot.workspaces ?? []);
+      setWorkspaces(spaces);
       applyTaskSelection(next);
       setMessages(thread?.messages.length ? thread.messages : initialMessages);
       setTrajectoryEvents(thread?.events ?? []);
@@ -2570,18 +2599,9 @@ function App() {
       setSelectedFile(null);
       setFileError("");
       replaceFileEditorScopes({});
-      setSelectionError(openingError);
-    } catch (error) {
-      if (requestId !== threadOpenRequestRef.current) return;
-      if (opened) setSelectionError(`${t("Could not open the data folder.")} ${String(error)}`);
-      else {
-        const message = error instanceof Error ? error.message : String(error);
-        setWorkspaceOpenError(message.replace(/^Error invoking remote method '[^']+':\s*/i, "").replace(/^Error:\s*/i, ""));
-      }
-    } finally {
-      dataFolderLoadingRef.current = false;
-      if (opened && requestId === threadOpenRequestRef.current) setWorkspaceReady(true);
-    }
+      setWorkspaceOpenError(readErrors.join("\n"));
+      setWorkspaceReady(true);
+    });
   }
 
   function replaceFileEditorScopes(next: FileEditorScopes) {
@@ -4164,6 +4184,10 @@ function App() {
       />
       <CommandPalette open={paletteOpen} commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
       <ProjectRemoveModal project={projectToRemove} onClose={() => setProjectToRemove(null)} onRemove={() => projectToRemove && void removeProject(projectToRemove)} />
+      <dialog ref={workspaceOpeningDialogRef} className="app-dialog app-dialog-compact workspace-opening-dialog" aria-label={t("Opening workspace")}
+        onCancel={(event) => event.preventDefault()} onKeyDown={(event) => event.stopPropagation()}>
+        <div role="status"><LoaderCircle className="spin" size={16} />{t("Opening workspace")}</div>
+      </dialog>
     </main>
   );
 }
