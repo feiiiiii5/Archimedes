@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const SOURCE = path.join(__dirname, '../assets/research-skills/paper2slides');
 const NAME = 'archimedes-paper2slides';
 const DIRS = { codex: '.agents/skills', claude: '.claude/skills' };
+const CODEX_UPDATED_RESOURCE = 'scripts/check_env.py';
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 
 function ensureDirectory(root, relative) {
@@ -42,23 +43,42 @@ function preparePaperSlidesSkill({ workspace, backend, thread, requested, emit =
   }));
   const hashes = Object.fromEntries([...files].map(([name, data]) => [name, hash(data)]));
   const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+  const markerPath = path.join(target, '.archimedes-skill.json');
+  const markerBytes = JSON.stringify({ owner: 'archimedes', files: hashes });
   if (existing) {
     if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error('The Paper to Slides skill path is not a real directory.');
-    const markerPath = path.join(target, '.archimedes-skill.json');
     const markerStat = fs.lstatSync(markerPath, { throwIfNoEntry: false });
     if (!markerStat?.isFile() || markerStat.isSymbolicLink()) throw new Error('An unmanaged Paper to Slides skill already exists; it was not replaced.');
     let marker; try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch { throw new Error('An unmanaged Paper to Slides skill already exists; it was not replaced.'); }
-    if (marker.owner !== 'archimedes' || JSON.stringify(marker.files) !== JSON.stringify(hashes)) throw new Error('The installed Paper to Slides skill differs from this version; it was not replaced.');
-    for (const [name, expected] of Object.entries(hashes)) {
+    const prior = marker?.files;
+    if (marker?.owner !== 'archimedes' || !prior || Object.keys(prior).length !== entries.length) throw new Error('The installed Paper to Slides skill differs from this version; it was not replaced.');
+    const changed = entries.filter(name => prior[name] !== hashes[name]);
+    const canUpgrade = backend === 'codex' && changed.length === 1 && changed[0] === CODEX_UPDATED_RESOURCE && /^[a-f0-9]{64}$/.test(prior[CODEX_UPDATED_RESOURCE]);
+    if (changed.length && !canUpgrade) throw new Error('The installed Paper to Slides skill differs from this version; it was not replaced.');
+    for (const name of entries) {
       let current = target;
       for (const segment of name.split('/')) { current = path.join(current, segment); const stat = fs.lstatSync(current, { throwIfNoEntry: false }); if (!stat || stat.isSymbolicLink()) throw new Error(`Skill resource missing or linked: ${name}`); }
-      if (hash(fs.readFileSync(current)) !== expected) throw new Error(`Skill resource was modified: ${name}`);
+      const installed = hash(fs.readFileSync(current));
+      // The resource may already be current if a prior upgrade stopped before
+      // updating its marker.
+      if (installed !== prior[name] && !(canUpgrade && name === CODEX_UPDATED_RESOURCE && installed === hashes[name])) throw new Error(`Skill resource was modified: ${name}`);
+    }
+    if (canUpgrade) {
+      const staging = fs.mkdtempSync(path.join(base, '.paper2slides-'));
+      try {
+        const resource = path.join(staging, 'check_env.py');
+        const marker = path.join(staging, '.archimedes-skill.json');
+        fs.writeFileSync(resource, files.get(CODEX_UPDATED_RESOURCE));
+        fs.writeFileSync(marker, markerBytes);
+        fs.renameSync(resource, path.join(target, CODEX_UPDATED_RESOURCE));
+        fs.renameSync(marker, markerPath);
+      } finally { fs.rmSync(staging, { recursive: true, force: true }); }
     }
   } else {
     const staging = fs.mkdtempSync(path.join(base, '.paper2slides-'));
     try {
       for (const [name, data] of files) { const file = path.join(staging, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data); }
-      fs.writeFileSync(path.join(staging, '.archimedes-skill.json'), JSON.stringify({ owner: 'archimedes', files: hashes }));
+      fs.writeFileSync(path.join(staging, '.archimedes-skill.json'), markerBytes);
       fs.renameSync(staging, target);
     } finally { fs.rmSync(staging, { recursive: true, force: true }); }
   }
