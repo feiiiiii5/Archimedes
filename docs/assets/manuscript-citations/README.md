@@ -29,3 +29,16 @@ not emulate Electron's PDF URL handler.
 ![Citation dialog](dialog.png)
 
 ![Metadata updated without another citation](updated.png)
+
+## Keep bibliography annotations and external edits
+
+These captures use the compiled macOS Electron app in the Charcoal theme at
+1560 × 980. In two temporary workspaces, the same manuscript entry starts with a
+handwritten DOI comment. Update its metadata, append a new reference to the
+saved bibliography from outside Writing, update the original metadata again,
+and open `references.bib` in Writing. The old build (`e8b8c1e`) loses both manual
+changes. The new build (`260dbb0`) keeps both and preserves `fixture2026`.
+
+| Before | After |
+| --- | --- |
+| [Bibliography after two updates](bibliography-refresh-before.png) | [Bibliography keeps the DOI note and added entry](bibliography-refresh-after.png) |
