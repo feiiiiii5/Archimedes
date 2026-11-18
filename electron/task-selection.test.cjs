@@ -20,7 +20,8 @@ async function harness(overrides = {}) {
   const ref = { current: state.selection };
   const scope = {
     ...helpers, crypto: global.crypto, t: text => text, projects, workspaces, threads: state.threads, workspace: '/data', mainSection: 'library', sideThread: null, sideBusy: false,
-    activeRunRef: { current: null }, taskSelectionRef: ref, dataFolderLoadingRef: { current: false }, threadOpenRequestRef: { current: 0 }, activeThreadIdRef: { current: 'a' }, composerKeyAliasesRef: { current: {} },
+    activeRunRef: { current: null }, taskSelectionRef: ref, dataFolderLoadingRef: { current: false }, threadOpenRequestRef: { current: 0 }, activeThreadIdRef: { current: 'a' },
+    composerKeyAliasesRef: { current: {} },
     initialMessages: [{ id: 'welcome' }], clearPendingAssistantDeltas() {}, chatModeFromThread: value => value,
     setTaskSelection(value) { state.selection = value; }, setSelectionError(value) { state.error = value; },
     setMessages(value) { state.messages = value; }, setThreads(update) { state.threads = update(state.threads); },
