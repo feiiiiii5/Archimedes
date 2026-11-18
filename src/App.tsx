@@ -1592,10 +1592,10 @@ function App() {
   // the agent veto a write instead of waiting for a prompt nobody can see.
   const approvalThreadId = activeThreadId ?? (agentBusy && runningOwnerKey === composerDraftKey ? runningThreadId : null);
   useEffect(() => {
-    if (!approvalThreadId || typeof desktopBridge?.claimApprovals !== "function") return;
-    void desktopBridge.claimApprovals(approvalThreadId, true).catch(() => {});
-    return () => { void desktopBridge.claimApprovals(approvalThreadId, false).catch(() => {}); };
-  }, [approvalThreadId]);
+    if (!workspace || !approvalThreadId || typeof desktopBridge?.claimApprovals !== "function") return;
+    void desktopBridge.claimApprovals(approvalThreadId, true, workspace).catch(() => {});
+    return () => { void desktopBridge.claimApprovals(approvalThreadId, false, workspace).catch(() => {}); };
+  }, [approvalThreadId, workspace]);
   useEffect(() => {
     if (!activeProjectId || !authState?.user || typeof desktopBridge?.joinProjectPresence !== "function") {
       setPresenceMembers([]);
