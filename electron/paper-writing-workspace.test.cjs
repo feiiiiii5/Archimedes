@@ -146,6 +146,37 @@ test("Writing names current drafts, compares modified sections, restores and con
   assert.equal(f.compiles.at(-1).root, f.a);
 });
 
+test("restoring a key version refreshes expanded source folders without reopening Writing", async t => {
+  const history = require("./paper-writing-history.cjs");
+  const workspaceId = "workspace-a";
+  const f = await fixture(t, { workspaceId, bridge: {
+    listManuscriptVersions: async input => history.listProjectManuscriptVersions(input),
+    saveManuscriptVersion: async input => history.saveManuscriptVersion(input),
+    compareManuscriptVersion: async input => history.compareManuscriptVersion(input),
+    restoreManuscriptVersion: async input => history.restoreManuscriptVersion(input),
+  } });
+  const saved = "paper/sections/restored.tex", current = "paper/sections/current.tex";
+  fs.mkdirSync(path.join(f.a, "paper/sections"));
+  fs.writeFileSync(path.join(f.a, saved), "The saved section.\n");
+  history.saveManuscriptVersion({ dataRoot: f.a, executionRoot: f.a, projectId: "a", workspaceId, mainPath: "paper/main.tex", name: "Saved section" });
+  fs.renameSync(path.join(f.a, saved), path.join(f.a, current));
+  await f.render(f.a);
+  await autoCompileOff();
+  await click("paper/sections");
+  await settle();
+  assert.ok(document.querySelector(`.paper-tree-row[title="${current}"]`));
+  assert.equal(document.querySelector(`.paper-tree-row[title="${saved}"]`), null);
+  await click("Key versions");
+  await React.act(async () => document.querySelector('.paper-version-row').click());
+  await clickText("Restore this key version");
+  await settle();
+  await click("Close key versions");
+  assert.equal(document.querySelector(`.paper-tree-row[title="${current}"]`), null);
+  assert.ok(document.querySelector(`.paper-tree-row[title="${saved}"]`));
+  await click(saved);
+  assert.equal(document.querySelector('.latex-editor-textarea').value, "The saved section.\n");
+});
+
 test("same-named papers keep their owner and autosave on departure without replaying an old open request", async t => {
   const f = await fixture(t);
   await f.render(f.b, 1); await autoCompileOff();

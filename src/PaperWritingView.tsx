@@ -321,6 +321,12 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
       const paths = new Set([...receipt.restoredPaths, ...receipt.removedPaths]);
       for (const name of paths) selected.owner.documents.delete(name);
       selected.owner.compileSequence++; selected.owner.compileResult = null; selected.owner.compileState = "idle"; selected.owner.compileLog = ""; selected.owner.coedit = false;
+      // Invalidate reads that began against the pre-restore directory tree.
+      for (const [directory, request] of selected.owner.directoryRequests) {
+        selected.owner.directoryRequests.set(directory, request + 1);
+      }
+      selected.owner.loading.clear();
+      await loadDirectory(projectRoot(selected.context.mainPath) || ".", true);
       await openFile(selected.context.mainPath);
       await onRefresh();
     });
