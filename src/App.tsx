@@ -1442,6 +1442,8 @@ function App() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [chatViewNonce, setChatViewNonce] = useState(0);
+  const [adoptedChatView, setAdoptedChatView] = useState<{ threadKey: string; viewKey: string } | null>(null);
+  const chatViewKey = adoptedChatView?.threadKey === taskOwnerKey ? adoptedChatView.viewKey : `${taskOwnerKey}:${chatViewNonce}`;
   const [researchMode, setResearchMode] = useState<ResearchMode>("standard");
   const [acceptedStages, setAcceptedStages] = useState<ResearchStageId[]>(() => {
     const activeIndex = Math.max(0, researchStages.findIndex((stage) => stage.mode === researchMode));
@@ -2915,6 +2917,10 @@ function App() {
         setMessages(result.thread.messages.length ? result.thread.messages : initialMessages);
         setTrajectoryEvents(result.thread.events ?? []);
         setEvents([]);
+        if (owner.threadId === null && taskSelectionRef.current.threadId === null) {
+          // The first result changes the task identity, but its queued follow-ups still belong to this composer.
+          setAdoptedChatView({ threadKey: taskDraftKey(resultSelection), viewKey: chatViewKey });
+        }
         applyTaskSelection(resultSelection);
         setBoundHarness(result.thread.harness ?? backendOverride ?? selectedHarness);
         setChangeSets(result.thread.changeSets ?? []);
@@ -3601,7 +3607,7 @@ function App() {
         <div className={mainSection === "chat" ? `main-view chat-main${sideThread ? " has-side-chat" : ""}` : "main-view knowledge-main"}>
           {mainSection === "chat" && (
             <ConversationView
-              key={activeThreadId ?? `new:${chatViewNonce}`}
+              key={chatViewKey}
               commentScope={sessionCommentsScope}
               addingComment={commentsOpen}
               commentsShowResolved={sessionTools.commentsShowResolved}
