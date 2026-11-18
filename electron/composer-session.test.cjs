@@ -24,6 +24,7 @@ async function callbacks(names, overrides = {}) {
     ...helpers, crypto: global.crypto, t: text => text,
     composerSessionsRef, composerKeyAliasesRef, queuedPromptScopesRef, noteValuesRef: { current: {} },
     composerAttachmentOwnersRef: { current: new Map() },
+    activeComposerRef: { current: null }, adoptedComposerFocusRef: { current: null },
     readComposerDraft: key => composerDrafts.get(key) ?? null,
     writeComposerDraft: (key, value) => value ? composerDrafts.set(key, value) : composerDrafts.delete(key),
     taskSelectionRef: { current: owner('a') }, dataFolderLoadingRef: { current: false }, activeThreadIdRef: { current: 'a' }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 },
@@ -105,7 +106,7 @@ test('a delayed successful run clears only submitted attachment objects in its o
 test('a newly created session receives later text, attachments and queued follow-ups from its original draft only', async () => {
   const { taskDraftKey } = await import('../src/task-selection.ts');
   const sourceKey = taskDraftKey({ ...owner('a'), threadId: null });
-  const stored = new Map([[sourceKey, { text: 'Later A typing', selectionStart: 14, selectionEnd: 14 }], ['b', { text: 'Keep B typing' }]]);
+  const stored = new Map([[sourceKey, { text: 'Later A typing', selectionStart: 3, selectionEnd: 7 }], ['b', { text: 'Keep B typing' }]]);
   const composerSessionsRef = { current: {} }, queuedPromptScopesRef = { current: { [sourceKey]: [{ draft: 'A queued' }], b: [{ draft: 'B queued' }] } };
   const h = await callbacks(['queueComposerText', 'moveNewTaskComposer'], {
     composerSessionsRef, queuedPromptScopesRef,
@@ -119,7 +120,7 @@ test('a newly created session receives later text, attachments and queued follow
   h.scope.updateComposer(sourceKey, current => ({ ...current, items: [{ id: 'later-a-file' }] }));
   h.scope.updateComposer(h.key('b'), current => ({ ...current, items: [{ id: 'b-file' }] }));
   h.moveNewTaskComposer(sourceKey, h.threadKey('created-a', 'a'));
-  assert.equal(stored.get(h.threadKey('created-a', 'a')).text, 'Later A typing');
+  assert.deepEqual(stored.get(h.threadKey('created-a', 'a')), { text: 'Later A typing', selectionStart: 3, selectionEnd: 7 });
   assert.equal(stored.has(sourceKey), false);
   assert.equal(stored.get('b').text, 'Keep B typing');
   assert.equal(h.state.sessions[h.threadKey('created-a', 'a')].items[0].id, 'later-a-file');

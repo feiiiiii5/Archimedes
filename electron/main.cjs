@@ -901,7 +901,7 @@ app.whenReady().then(async () => {
     return result.canceled ? "" : result.filePaths[0] || "";
   });
   ipcMain.handle("paper-review-app:create", async (event, input = {}) => {
-    const resolvedWorkspace = input.source?.kind === "library"
+    const resolvedWorkspace = (input.source?.kind || "library") === "library"
       ? store.currentStore().workspace
       : resolveWorkspace(input.workspace || windowWorkspaces.get(event.sender.id));
     const sender = event.sender;
@@ -1552,6 +1552,7 @@ app.whenReady().then(async () => {
 
     // Detached on purpose: the renderer gets progress events, the main process
     // owns the run, and closing the reproduction view does not stop it.
+    const lease = store.captureStore();
     void (async () => {
       try {
         const branch = session.contract.repo?.branch || "";
@@ -1606,6 +1607,8 @@ app.whenReady().then(async () => {
         session.send({ type: "error", detail: message });
         session.send({ type: "finished", status: "failed", summary: message });
         notifyRunFinished(record, message);
+      } finally {
+        lease.release();
       }
     })();
 
@@ -2320,9 +2323,10 @@ app.whenReady().then(async () => {
     return { claimed: agent.setApprovalSurface(threadId, true, workspace) };
   });
 
-  ipcMain.handle("agent:interrupt", (_event, threadId) => {
+  ipcMain.handle("agent:interrupt", (event, threadId) => {
     if (typeof threadId !== "string") throw new Error("A research thread ID is required.");
-    return { interrupted: agent.interruptAgent(threadId) };
+    const workspace = windowWorkspaces.get(event.sender.id);
+    return { interrupted: Boolean(workspace && agent.interruptAgent(threadId, workspace)) };
   });
 
   ipcMain.handle("terminal:run", (event, { command, cwd, actionId }) => {
