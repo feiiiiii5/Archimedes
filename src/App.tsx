@@ -2063,7 +2063,8 @@ function App() {
   }
 
   async function continueAnalysisInChat(text: string, input: AnalysisChatInput, owner: TaskSelection, isCurrentInput: () => boolean) {
-    if (!owner.projectId) throw new Error(t("Select a project before continuing the analysis."));
+    const { projectId } = owner;
+    if (!projectId) throw new Error(t("Select a project before continuing the analysis."));
     const originKey = taskDraftKey(taskSelectionRef.current);
     if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot || taskSelectionRef.current.projectId !== owner.projectId) throw new Error(t("Select a project before continuing the analysis."));
     const result = input.resultId ? await (desktopBridge as ResearchDeskBridge & ProjectResultsBridge).getProjectResult(input.resultId) : null;
@@ -2083,7 +2084,7 @@ function App() {
           }
         }
         if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot) throw new Error(t("Return to the analysis data folder before attaching its source."));
-        return desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId || undefined, workspacePath: sessionOwner.executionRoot, basedOnResultId: result?.id, mode: "free-chat", title: `${t("Data analysis")}: ${input.name}` });
+        return desktopBridge.createResearchThread({ projectId, workspaceId: owner.workspaceId || undefined, workspacePath: sessionOwner.executionRoot, basedOnResultId: result?.id, mode: "free-chat", title: `${t("Data analysis")}: ${input.name}` });
       })();
       analysisHandoffsRef.current.set(sessionKey, pending);
     }
