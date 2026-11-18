@@ -23,6 +23,7 @@ async function callbacks(names, overrides = {}) {
   const scope = {
     ...helpers, crypto: global.crypto, t: text => text,
     composerSessionsRef, composerKeyAliasesRef, queuedPromptScopesRef, noteValuesRef: { current: {} },
+    composerAttachmentOwnersRef: { current: new Map() },
     readComposerDraft: key => composerDrafts.get(key) ?? null,
     writeComposerDraft: (key, value) => value ? composerDrafts.set(key, value) : composerDrafts.delete(key),
     taskSelectionRef: { current: owner('a') }, dataFolderLoadingRef: { current: false }, activeThreadIdRef: { current: 'a' }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 },
@@ -179,7 +180,7 @@ test('an attachment that resolves after a new session is created joins that sess
   const runningGate = deferred(), attachmentGate = deferred();
   const draftOwner = { ...owner('a'), threadId: null };
   const sourceKey = taskDraftKey(draftOwner);
-  const h = await callbacks(['submitPrompt', 'moveNewTaskComposer', 'updateComposer', 'applyTaskSelection', 'queueComposerText'], {
+  const h = await callbacks(['submitPrompt', 'moveNewTaskComposer', 'updateComposer', 'composerAttachmentCallback', 'applyTaskSelection', 'queueComposerText'], {
     taskSelectionRef: { current: draftOwner },
     desktopBridge: { runAgent: () => runningGate.promise },
   });
@@ -188,21 +189,15 @@ test('an attachment that resolves after a new session is created joins that sess
 
   const submitting = h.submitPrompt('A brand-new question');
   // The attachment upload began while the composer still had the temporary key.
-  const lateAttachmentArrives = attachmentGate.promise.then(() => h.updateComposer(sourceKey, current => ({
-    ...current,
-    items: current.items.some(item => item.id === lateAttachment.id) ? current.items : [...current.items, lateAttachment],
-  })));
+  const attachToOriginal = h.composerAttachmentCallback(sourceKey);
+  const lateAttachmentArrives = attachmentGate.promise.then(() => attachToOriginal([lateAttachment]));
   h.updateComposer(sourceKey, current => ({ ...current, items: [...current.items, earlyAttachment] }));
 
   runningGate.resolve({ threadId: 'created-a', thread: thread('created-a', 'a'), actions: [] });
   assert.equal(await submitting, true);
-  attachmentGate.resolve();
-  await lateAttachmentArrives;
-
   const createdKey = h.threadKey('created-a', 'a');
-  assert.deepEqual(h.state.sessions[createdKey].items.map(item => item.id), ['early-a-file', 'late-a-file']);
-  assert.equal(h.state.sessions[createdKey].items.filter(item => item.id === lateAttachment.id).length, 1, 'the redirected attachment is not appended twice');
-  assert.deepEqual(h.state.sessions[sourceKey].items, [], 'the drained draft key received nothing after the redirect');
+  assert.deepEqual(h.state.sessions[createdKey].items.map(item => item.id), ['early-a-file']);
+  assert.deepEqual(h.state.sessions[sourceKey].items, [], 'the temporary draft was drained');
   assert.equal(h.state.sessions[sourceKey].request, null);
   assert.deepEqual(h.state.sessions[h.key('b')].items.map(item => item.id), ['b-file']);
 
@@ -213,8 +208,11 @@ test('an attachment that resolves after a new session is created joins that sess
   // Starting a new draft at the same project key clears the redirect for that key.
   h.applyTaskSelection({ ...draftOwner });
   assert.equal(taskDraftKey(h.scope.taskSelectionRef.current), sourceKey);
-  h.updateComposer(sourceKey, current => ({ ...current, items: [...current.items, { id: 'next-a-file', name: 'next.txt' }] }));
+  const attachToNewDraft = h.composerAttachmentCallback(sourceKey);
+  attachToNewDraft([{ id: 'next-a-file', name: 'next.txt' }]);
   h.queueComposerText(sourceKey, 'Next draft handoff');
+  attachmentGate.resolve();
+  await lateAttachmentArrives;
   assert.deepEqual(h.state.sessions[sourceKey].items.map(item => item.id), ['next-a-file']);
   assert.equal(h.state.sessions[sourceKey].request.text, 'Next draft handoff');
   assert.deepEqual(h.state.sessions[createdKey].items.map(item => item.id), ['early-a-file', 'late-a-file']);

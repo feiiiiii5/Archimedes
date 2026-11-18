@@ -1511,6 +1511,7 @@ function App() {
   // there, so attachment callbacks that resolve after the thread is created
   // still land in that thread instead of a drained temporary composer.
   const composerKeyAliasesRef = useRef<ComposerKeyAliases>({});
+  const composerAttachmentOwnersRef = useRef(new Map<string, { key: string }>());
   const composerSession = getComposerSession(composerSessions, composerDraftKey);
   const contextItems = composerSession.items;
   const composerRequest = composerSession.request;
@@ -1520,6 +1521,14 @@ function App() {
   }
   function setContextItems(update: (items: ContextAttachment[]) => ContextAttachment[], key = composerDraftKey) {
     updateComposer(key, (session) => ({ ...session, items: update(session.items) }));
+  }
+  function composerAttachmentCallback(key: string) {
+    const owner = composerAttachmentOwnersRef.current.get(key) ?? { key };
+    composerAttachmentOwnersRef.current.set(key, owner);
+    return (added: ContextAttachment[]) => setContextItems(
+      (current) => [...current, ...added.filter((item) => !current.some((candidate) => candidate.id === item.id))].slice(0, 12),
+      owner.key,
+    );
   }
   function setComposerRequest(request: ComposerRequest | null | ((current: ComposerRequest | null) => ComposerRequest | null), key = composerDraftKey) {
     updateComposer(key, (session) => ({ ...session, request: typeof request === "function" ? request(session.request) : request }));
@@ -2032,6 +2041,13 @@ function App() {
     // Attachment callbacks started before this move may resolve later with the
     // old draft key. Let them reach the session that now owns that draft.
     composerKeyAliasesRef.current = { ...composerKeyAliasesRef.current, [ownerKey]: targetKey };
+    // A new draft can reuse ownerKey before an earlier attachment finishes.
+    // Keep that callback bound to the moved owner even after the alias clears.
+    const attachmentOwner = composerAttachmentOwnersRef.current.get(ownerKey);
+    if (attachmentOwner) {
+      attachmentOwner.key = targetKey;
+      composerAttachmentOwnersRef.current.delete(ownerKey);
+    }
   }
 
   function queueComposerText(key: string, text: string, mode: "append" | "replace" = "append") {
@@ -3727,7 +3743,7 @@ function App() {
               contextLength={contextLength}
               modelCapabilities={modelCapabilities}
               contextItems={contextItems}
-              onAddContext={(added) => setContextItems((current) => [...current, ...added.filter((item) => !current.some((candidate) => candidate.id === item.id))].slice(0, 12))}
+              onAddContext={composerAttachmentCallback(composerDraftKey)}
               onRemoveContext={(id) => setContextItems((current) => current.filter((item) => item.id !== id))}
               onApprove={() => void approvePendingAction()}
               onReject={() => void rejectPendingAction()}
