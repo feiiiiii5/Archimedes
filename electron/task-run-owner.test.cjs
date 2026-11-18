@@ -11,20 +11,27 @@ function extract(name) {
   return source.slice(start, start + 1 + end);
 }
 
-test("late run events and completion cannot adopt an empty task in another project", async () => {
+test("a first result adopts its own draft and cannot affect an empty task in another project", async () => {
   const helpers = await import("../src/task-selection.ts");
   const { transformWithOxc } = await import("vite");
   const selection = project => ({ dataRoot: "/data", projectId: project, workspaceId: `ws-${project}`, threadId: null, executionRoot: `/execution/${project}` });
   const resultThread = { id: "created-a", project_id: "a", workspace_id: "ws-a", workspace_path: "/execution/a", messages: [{ id: "a", text: "A response" }], events: [], turns: [], changeSets: [] };
   const bMessage = { id: "b", text: "B transcript" }, bAttachment = { id: "b-file" };
   const state = { messages: [], events: [], threads: [], pending: null, context: [], error: "" };
+  const composerDraftKey = "new:a:/execution/a";
+  const unsent = { text: "A follow-up typed while streaming", selectionStart: 3, selectionEnd: 10 };
+  const drafts = new Map([[composerDraftKey, unsent]]);
   let resolve, receive, submitted;
-  const pending = new Promise(done => { resolve = done; });
+  let pending = new Promise(done => { resolve = done; });
   const update = key => value => { state[key] = typeof value === "function" ? value(state[key]) : value; };
   const scope = {
     ...helpers, crypto: global.crypto, t: value => value, workspaces: [],
     researchMode: "free-chat", reasoningEffort: "medium", contextLength: "standard", contextItems: [], activeThreadId: null,
     threadVisibility: "project", selectedHarness: "api", selectedNativeBackend: null, draftNoteKey: "draft:/data",
+    composerDraftKey, chatViewKey: "A composer",
+    readComposerDraft: key => drafts.get(key),
+    writeComposerDraft(key, draft) { if (draft) drafts.set(key, draft); else drafts.delete(key); return true; },
+    setAdoptedChatView: update("view"),
     taskSelectionRef: { current: selection("a") }, activeThreadIdRef: { current: null }, dataFolderLoadingRef: { current: false },
     activeRunRef: { current: null }, commandLockRef: { current: false }, noteValuesRef: { current: {} },
     threadsRef: { current: [resultThread] }, refreshingThreadsRef: { current: false },
@@ -55,6 +62,25 @@ test("late run events and completion cannot adopt an empty task in another proje
   assert.deepEqual(state.context, [bAttachment]);
   assert.equal(state.threads[0], resultThread);
   assert.equal(submitted.workspace, "/execution/a");
+  assert.equal(drafts.get(composerDraftKey), unsent);
+  assert.equal(drafts.has(resultThread.id), false);
+
+  // The same completion while its composer is selected carries the later draft
+  // and the file attached during streaming into the newly saved session.
+  const consumed = { id: "first-file", name: "Initial readings" };
+  const followup = { id: "followup-file", name: "Follow-up notes" };
+  scope.taskSelectionRef.current = selection("a");
+  scope.contextItems = [consumed];
+  pending = new Promise(done => { resolve = done; });
+  const adopting = submitPrompt("A question");
+  state.context = [consumed, followup];
+  resolve({ threadId: "created-a", thread: resultThread, actions: [] });
+  assert.equal(await adopting, true);
+  assert.equal(scope.taskSelectionRef.current.threadId, "created-a");
+  assert.equal(state.view.viewKey, "A composer");
+  assert.deepEqual(drafts.get(resultThread.id), unsent);
+  assert.equal(drafts.has(composerDraftKey), false);
+  assert.deepEqual(state.context, [followup]);
 });
 
 test("a delayed approval uses its original task for command execution and completion", async () => {
