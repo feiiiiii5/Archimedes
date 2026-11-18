@@ -276,8 +276,10 @@ function writeComposerDraft(key: string, draft: ComposerDraft | null) {
     const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`;
     if (!draft) window.localStorage.removeItem(storageKey);
     else window.localStorage.setItem(storageKey, JSON.stringify(draft));
+    return true;
   } catch {
     // Drafts are a convenience; storage failures must not block sending.
+    return false;
   }
 }
 
@@ -2927,7 +2929,9 @@ function App() {
         setTrajectoryEvents(result.thread.events ?? []);
         setEvents([]);
         if (owner.threadId === null && taskSelectionRef.current.threadId === null) {
-          // The first result changes the task identity, but its queued follow-ups still belong to this composer.
+          const unsent = readComposerDraft(composerDraftKey);
+          if (unsent && writeComposerDraft(result.threadId, unsent)) writeComposerDraft(composerDraftKey, null);
+          // The saved thread still owns this composer's unsent draft and queued follow-ups.
           setAdoptedChatView({ threadKey: taskDraftKey(resultSelection), viewKey: chatViewKey });
         }
         applyTaskSelection(resultSelection);
@@ -4215,8 +4219,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const [steering, setSteering] = useState(false);
   const reportedNativeUsage = useMemo(() => nativeUsage(trajectoryEvents), [trajectoryEvents]);
   const slashRunningRef = useRef(false);
-  const storedDraftRef = useRef<ComposerDraft | null>(readComposerDraft(draftKey));
-  const [prompt, setPrompt] = useState(storedDraftRef.current?.text ?? "");
+  const [storedDraft] = useState(() => readComposerDraft(draftKey));
+  const [prompt, setPrompt] = useState(storedDraft?.text ?? "");
   const [promptHistory, setPromptHistory] = useState<string[]>(readComposerHistory);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
@@ -4237,7 +4241,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const rejectHistoryAction = useCallback(() => historyHandlersRef.current.onReject(), []);
   const openHistoryFile = useCallback((path: string) => historyHandlersRef.current.onOpenFile(path), []);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
-  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraftRef.current?.newChatMode ?? "standard");
+  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraft?.newChatMode ?? "standard");
   const welcomeVisible = showWelcome && !welcomeDismissed;
 
   useEffect(() => {
@@ -4249,27 +4253,17 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   }, [composerRequest, onComposerRequestApplied]);
 
   useEffect(() => {
-    // A queued composer request wins over the stored draft on first mount:
-    // "Ask AI" from another module switches sections and sets both in the same
-    // commit, so restoring the empty draft here would erase the prompt.
-    if (composerRequest && appliedComposerRequestRef.current === composerRequest.id) return;
-    const stored = readComposerDraft(draftKey);
-    storedDraftRef.current = stored;
-    setNewChatMode(stored?.newChatMode ?? "standard");
-    setPrompt(stored?.text ?? "");
-    setPendingResearchSkill(null);
-    setCommandNotice("");
-    setHistoryIndex(-1);
-    if (!stored) return;
+    // A task switch remounts the composer. Adopting its first thread keeps the live draft.
+    if (!storedDraft || (composerRequest && appliedComposerRequestRef.current === composerRequest.id)) return;
     const frame = requestAnimationFrame(() => {
       const textarea = composerRef.current;
       if (!textarea) return;
-      const start = Math.min(stored.selectionStart, stored.text.length);
-      const end = Math.min(stored.selectionEnd, stored.text.length);
+      const start = Math.min(storedDraft.selectionStart, storedDraft.text.length);
+      const end = Math.min(storedDraft.selectionEnd, storedDraft.text.length);
       textarea.setSelectionRange(start, end);
     });
     return () => cancelAnimationFrame(frame);
-  }, [draftKey]);
+  }, [storedDraft]);
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -4623,7 +4617,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
     if (!sent) setPrompt((current) => current.trim() ? current : draft);
     requestAnimationFrame(() => {
       const textarea = composerRef.current;
-      if (!textarea) return;
+      if (!textarea || (sent && textarea.value)) return;
       textarea.focus();
       const end = textarea.value.length;
       textarea.setSelectionRange(end, end);
