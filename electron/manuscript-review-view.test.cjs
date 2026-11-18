@@ -69,4 +69,3 @@ test("actual review view prioritizes the manuscript request over old history and
     await render("/data/a", "/old/source"); assert.ok(shown().textContent.includes("Explain the baseline"));
   } finally { await React.act(async () => root.unmount()); }
 });
-
