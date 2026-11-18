@@ -10,6 +10,7 @@ const { prepareConversation } = require("./agent/context.cjs");
 const { workspaceInstructions } = require("./thread-commands.cjs");
 const { hasApprovalSurface: hasClaimedSurface, resolveApproval, setApprovalSurface: claimApprovalSurface, waitForApproval } = require("./agent/approval-manager.cjs");
 const { StreamContentGuard, normalizeAssistantMessage } = require("./agent/model-response.cjs");
+const { ModelIncompleteError, assertModelCompletion } = require("./agent/model-completion.cjs");
 const { completeAnthropic } = require("./agent/anthropic.cjs");
 const { extractPdfText, extractPdfTextData, findPdfTextData, renderPdfPageData } = require("./agent/pdf-reader.cjs");
 const { fetchPublicPdf, findPublicPage, isPrivateAddress, openPublicPage } = require("./agent/remote-content.cjs");
@@ -560,7 +561,7 @@ function parseArguments(serialized) {
   catch { throw new Error("The model returned invalid tool arguments."); }
 }
 
-async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, contextItems, foundPapers, pdfCache, signal, capabilities = DEFAULT_CAPABILITIES, browser, config, recordEvent = () => {}, registry = defaultToolRegistry, researchRun, reasoningEffort, dataStore = defaultStore.currentStore() }, args) {
+async function executeBuiltInTool({ root, repositoryWorkspace = root, taskId, threadId, turnId, call, emit, contextItems, foundPapers, pdfCache, signal, capabilities = DEFAULT_CAPABILITIES, browser, config, recordEvent = () => {}, registry = defaultToolRegistry, researchRun, reasoningEffort, dataStore = defaultStore.currentStore() }, args) {
   const store = dataStore;
   const name = call.function.name;
 
@@ -607,7 +608,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
         if (!message.tool_calls.length) { response = message.content || ""; break; }
         for (const child of message.tool_calls) {
           try {
-            const result = await executeTool({ root, taskId, threadId, turnId, call: child, emit, contextItems, foundPapers, pdfCache, signal, capabilities, browser, config, recordEvent: workerRecord, registry, researchRun, dataStore, preflight: (toolName, toolArgs) => {
+            const result = await executeTool({ root, repositoryWorkspace, taskId, threadId, turnId, call: child, emit, contextItems, foundPapers, pdfCache, signal, capabilities, browser, config, recordEvent: workerRecord, registry, researchRun, dataStore, preflight: (toolName, toolArgs) => {
               if (!allowed.has(toolName)) throw new Error("Tool unavailable in isolated phase.");
               if ((toolName === "write_artifact" || toolName === "edit_workspace_file") && !outputs.includes(String(toolArgs.path || "").replaceAll("\\", "/"))) throw new Error("The file was not declared as a phase output.");
             } });
@@ -714,7 +715,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "list_attached_repository_files") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (repository.checkout) {
-      const listing = await listRepositoryCheckoutDirectory(root, repository.url, args.directory || "", checkoutBranchOf(repository));
+      const listing = await listRepositoryCheckoutDirectory(repositoryWorkspace, repository.url, args.directory || "", checkoutBranchOf(repository));
       return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit, ...listing }) };
     }
     return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.branch,
@@ -725,7 +726,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "read_attached_repository_file") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (repository.checkout) {
-      const file = await readRepositoryCheckoutFile(root, repository.url, args.path, checkoutBranchOf(repository));
+      const file = await readRepositoryCheckoutFile(repositoryWorkspace, repository.url, args.path, checkoutBranchOf(repository));
       return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit,
         path: file.path, line_count: file.line_count, size_bytes: file.size, content: file.content,
       }) };
@@ -739,7 +740,7 @@ async function executeBuiltInTool({ root, taskId, threadId, turnId, call, emit, 
   if (name === "search_attached_repository") {
     const repository = attachedRepository(contextItems, args.attachment_id);
     if (!repository.checkout) throw new Error("Full repository search is available after the user starts a code audit checkout.");
-    const result = await searchRepositoryCheckout(root, repository.url, args.query, args.directory || "", checkoutBranchOf(repository));
+    const result = await searchRepositoryCheckout(repositoryWorkspace, repository.url, args.query, args.directory || "", checkoutBranchOf(repository));
     return { content: JSON.stringify({ attachment_id: args.attachment_id, url: repository.url, branch: repository.checkout.branch, commit: repository.checkout.commit, ...result }) };
   }
   if (name === "read_attached_paper_pdf") {
@@ -890,10 +891,10 @@ async function complete(config, messages, { signal, onTextDelta = () => {}, allo
     }
     const body = await fallback.json();
     const choice = body?.choices?.[0];
-    if (requireComplete && choice?.finish_reason === "length") throw new Error("Model output was truncated; reconstruction cannot safely use it.");
     const responseMessage = choice?.message || (typeof choice?.text === "string" ? { role: "assistant", content: choice.text } : null);
     if (!responseMessage) throw new Error("The model returned neither a compatible stream nor a complete response message.");
     const normalized = normalizeAssistantMessage(responseMessage);
+    assertModelCompletion({ provider: "openai", finishReason: choice.finish_reason, partialResponse: normalized.content, toolCalls: normalized.tool_calls });
     if (normalized.content) onTextDelta(normalized.content);
     return normalized;
   };
@@ -929,10 +930,10 @@ async function complete(config, messages, { signal, onTextDelta = () => {}, allo
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("text/event-stream") || !response.body) {
     const body = await response.json();
-    if (requireComplete && body?.choices?.[0]?.finish_reason === "length") throw new Error("Model output was truncated; reconstruction cannot safely use it.");
     const message = body?.choices?.[0]?.message;
     if (!message) throw new Error("The model response did not contain a message.");
     const normalized = normalizeAssistantMessage(message);
+    assertModelCompletion({ provider: "openai", finishReason: body.choices[0].finish_reason, partialResponse: normalized.content, toolCalls: normalized.tool_calls });
     if (normalized.content) onTextDelta(normalized.content);
     return normalized;
   }
@@ -942,23 +943,39 @@ async function complete(config, messages, { signal, onTextDelta = () => {}, allo
   const message = { content: "", tool_calls: [] };
   const contentGuard = new StreamContentGuard(onTextDelta);
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = frames.pop() || "";
-    for (const frame of frames) {
-      const serialized = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-      if (!serialized || serialized === "[DONE]") continue;
-      let body;
-      try { body = JSON.parse(serialized); } catch { continue; }
-      if (requireComplete && body?.choices?.[0]?.finish_reason === "length") throw new Error("Model output was truncated; reconstruction cannot safely use it.");
-      applyDelta(message, body?.choices?.[0]?.delta || {}, (delta) => contentGuard.push(delta));
+  let finishReason = null;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || "";
+      if (done && buffer.trim()) { frames.push(buffer); buffer = ""; }
+      for (const frame of frames) {
+        const serialized = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
+        if (!serialized || serialized === "[DONE]") continue;
+        let body;
+        try { body = JSON.parse(serialized); }
+        catch { throw new ModelIncompleteError({ provider: "openai", reason: "malformed_frame" }); }
+        if (body.error) throw new Error(body.error.message || "Model stream error.");
+        if (body?.choices?.[0]?.finish_reason) finishReason = body.choices[0].finish_reason;
+        applyDelta(message, body?.choices?.[0]?.delta || {}, (delta) => contentGuard.push(delta));
+      }
+      if (done) break;
     }
-    if (done) break;
+  } catch (error) {
+    const partialResponse = message.content.trimStart().startsWith("<｜｜DSML｜｜") ? "" : message.content;
+    try { await reader.cancel(); } catch { /* Preserve the actual stream error. */ }
+    if (signal?.aborted || error?.name === "AbortError") { error.partialResponse = partialResponse; throw error; }
+    if (error.code === "MODEL_RESPONSE_INCOMPLETE") { error.partialResponse = partialResponse; throw error; }
+    throw new ModelIncompleteError({ provider: "openai", reason: "stream_error", partialResponse, detail: error.message });
+  } finally { reader.releaseLock(); }
+  if (!message.content && !message.tool_calls.length) {
+    if (finishReason) assertModelCompletion({ provider: "openai", finishReason, partialResponse: "" });
+    return completeWithoutStream();
   }
-  if (!message.content && !message.tool_calls.length) return completeWithoutStream();
   const normalized = normalizeAssistantMessage(message);
+  assertModelCompletion({ provider: "openai", finishReason, terminalSeen: Boolean(finishReason), partialResponse: normalized.content, toolCalls: normalized.tool_calls });
   contentGuard.finish(normalized);
   return normalized;
 }
@@ -1130,7 +1147,7 @@ async function runAgentInStore({ prompt, workspace, threadId, projectId, workspa
 
       for (const call of message.tool_calls) {
         try {
-          const result = await executeTool({ root: workspace, taskId: task.id, threadId: thread.id, turnId: turn.id, call, emit: emitTurn, contextItems, foundPapers, pdfCache, signal: controller.signal, capabilities: turnCapabilities, browser, config, recordEvent, registry: toolRegistry, researchRun, dataStore, reasoningEffort: resolvedReasoningEffort, preflight: (name, args) => {
+          const result = await executeTool({ root: workspace, repositoryWorkspace: origin === "paper" ? dataStore.workspace : workspace, taskId: task.id, threadId: thread.id, turnId: turn.id, call, emit: emitTurn, contextItems, foundPapers, pdfCache, signal: controller.signal, capabilities: turnCapabilities, browser, config, recordEvent, registry: toolRegistry, researchRun, dataStore, reasoningEffort: resolvedReasoningEffort, preflight: (name, args) => {
             if (name === "search_academic_papers") {
               if (academicSearches >= policy.maxAcademicSearches) throw new Error("The academic search budget is exhausted. Synthesize the findings already collected.");
               academicSearches += 1;
@@ -1174,6 +1191,12 @@ async function runAgentInStore({ prompt, workspace, threadId, projectId, workspa
     if (controller.signal.aborted || error?.name === "AbortError") {
       emitTurn({ type: "interrupted", title: "Research turn interrupted", detail: "Conversation history was preserved" });
       return finish(`${error.partialResponse ? `${error.partialResponse}\n\n` : ""}This research turn was interrupted. You can continue in the same thread.${externalBackend ? " Check partial native changes before continuing." : ""}`, "interrupted");
+    }
+    if (error.code === "MODEL_RESPONSE_INCOMPLETE") {
+      const failure = { code: error.code, reason: error.reason, provider: error.provider, finishReason: error.finishReason };
+      recordEvent({ type: "model_incomplete", payload: failure });
+      emitTurn({ type: "incomplete", title: "Response incomplete", detail: "Partial text was kept. Continue in this chat to retry; no tool from the unfinished response was executed.", error: failure });
+      return { ...finish(`${error.partialResponse ? `${error.partialResponse}\n\n` : ""}This model response is incomplete: ${error.message} Continue in this chat to retry.`, "incomplete"), error: failure };
     }
     const response = `${error.partialResponse ? `${error.partialResponse}\n\n` : ""}Archimedes could not complete this task: ${error.message || String(error)}`;
     emitTurn({ type: "failed", title: "Research turn failed", detail: "The turn record was saved for inspection" });
