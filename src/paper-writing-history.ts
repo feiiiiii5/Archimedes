@@ -1,11 +1,11 @@
-export type ManuscriptVersionOwner = {
+export type ManuscriptVersionScope = {
   dataRoot?: string;
   projectId: string;
   workspaceId: string;
   executionRoot: string;
-  mainPath: string;
   threadId?: string | null;
 };
+export type ManuscriptVersionOwner = ManuscriptVersionScope & { mainPath: string };
 export type ManuscriptVersion = ManuscriptVersionOwner & {
   id: string;
   name: string;
@@ -20,7 +20,7 @@ export type ManuscriptVersionComparison = {
   changes: Array<{ path: string; status: "added" | "removed" | "modified"; binary: boolean; patch: string }>;
 };
 export type PaperWritingBridge = {
-  listManuscriptVersions(owner: ManuscriptVersionOwner): Promise<ManuscriptVersion[]>;
+  listManuscriptVersions(scope: ManuscriptVersionScope & { mainPath?: string }): Promise<ManuscriptVersion[]>;
   saveManuscriptVersion(input: ManuscriptVersionOwner & { name: string }): Promise<ManuscriptVersion>;
   compareManuscriptVersion(input: ManuscriptVersionOwner & { id: string }): Promise<ManuscriptVersionComparison>;
   restoreManuscriptVersion(input: ManuscriptVersionOwner & { id: string; expectedSourceVersion: string }): Promise<{ version: ManuscriptVersion; restoredPaths: string[]; removedPaths: string[]; previousVersion: ManuscriptVersion | null }>;

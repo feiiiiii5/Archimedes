@@ -1,6 +1,7 @@
 export const writingVersions: Record<string, string> = {
   "Added": "新增",
   "Binary asset changed. Restoring uses the saved file bytes.": "二进制素材已变化，恢复时使用该版本保存的文件。",
+  "Choose a saved key version to compare or restore its files.": "请选择一个已保存的关键版本，比较或恢复它的文件。",
   "Close key versions": "关闭关键版本",
   "Compare": "比较",
   "Current manuscript": "当前稿件",

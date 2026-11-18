@@ -178,6 +178,43 @@ test("restoring a key version refreshes expanded source folders without reopenin
   assert.equal(document.querySelector('.latex-editor-textarea').value, "The saved section.\n");
 });
 
+test("a newly opened Writing workspace can restore a saved manuscript with no live main file", async t => {
+  const history = require("./paper-writing-history.cjs");
+  const workspaceId = "workspace-a";
+  const f = await fixture(t, { workspaceId, bridge: {
+    listManuscriptVersions: async input => history.listProjectManuscriptVersions(input),
+    saveManuscriptVersion: async input => history.saveManuscriptVersion(input),
+    compareManuscriptVersion: async input => history.compareManuscriptVersion(input),
+    restoreManuscriptVersion: async input => history.restoreManuscriptVersion(input),
+  } });
+  const owner = { executionRoot: f.a, projectId: "a", workspaceId };
+  fs.mkdirSync(path.join(f.a, "second-paper"));
+  fs.writeFileSync(path.join(f.a, "second-paper/main.tex"), source("Second manuscript"));
+  history.saveManuscriptVersion({ ...owner, mainPath: "paper/main.tex", name: "First manuscript milestone" });
+  history.saveManuscriptVersion({ ...owner, mainPath: "second-paper/main.tex", name: "Second manuscript milestone" });
+  await f.render(f.a);
+  fs.rmSync(path.join(f.a, "paper"), { recursive: true });
+  fs.rmSync(path.join(f.a, "second-paper"), { recursive: true });
+  await f.restart(f.a);
+  assert.equal(document.querySelector(".latex-editor-textarea"), null);
+  assert.equal(document.querySelector('button[aria-label="Key versions"]').disabled, false);
+  await clickText("Key versions");
+  assert.equal(document.querySelector(".paper-existing-projects"), null);
+  assert.equal(document.querySelector(".paper-version-save"), null);
+  const rows = [...document.querySelectorAll(".paper-version-row")];
+  assert.equal(rows.length, 2);
+  const second = rows.find(row => row.textContent.includes("Second manuscript milestone"));
+  assert.match(second.textContent, /second-paper\/main\.tex/);
+  await React.act(async () => second.click());
+  assert.match(document.querySelector(".paper-version-comparison").textContent, /second-paper\/main\.tex/);
+  await clickText("Restore this key version");
+  await click("Close key versions");
+  assert.equal(document.querySelector('.latex-editor-textarea').value, source("Second manuscript"));
+  assert.equal(fs.readFileSync(path.join(f.a, "second-paper/main.tex"), "utf8"), source("Second manuscript"));
+  assert.equal(fs.existsSync(path.join(f.a, "paper/main.tex")), false);
+  assert.equal(f.compiles.length, 0);
+});
+
 test("same-named papers keep their owner and autosave on departure without replaying an old open request", async t => {
   const f = await fixture(t);
   await f.render(f.b, 1); await autoCompileOff();

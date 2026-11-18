@@ -2,7 +2,7 @@
 .paper-version-save input { min-width: 0; width: 100%; padding: 9px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-control); }
 .paper-version-list { display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; }
 .paper-version-row { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-control); background: var(--surface-panel); color: var(--text-primary); text-align: left; }
-.paper-version-row > span:first-of-type { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
+.paper-version-row > span:first-of-type { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .paper-version-row small, .paper-continuity-hint { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .paper-version-row.active { border-color: var(--accent); background: var(--surface-control-active); }
 .paper-version-save label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }

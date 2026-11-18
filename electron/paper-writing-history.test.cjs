@@ -87,6 +87,7 @@ test("a key version restores a missing main file and a missing manuscript folder
   assert.deepEqual(fs.readFileSync(main), original);
   assert.ok(restored.previousVersion.files.some(file => file.path === "paper/renamed.tex"));
   fs.renameSync(path.join(f.root, "paper"), path.join(f.root, "moved-paper"));
+  assert.ok(f.command("list", { mainPath: undefined }).some(version => version.id === saved.id && version.mainPath === "paper/main.tex"));
   comparison = f.command("compare", { id: saved.id });
   assert.equal(comparison.changes.length, saved.files.length);
   f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion });
