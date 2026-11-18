@@ -8,7 +8,7 @@ before(async () => {
   const bibliography = await import("../src/bibliography.ts"), { transformWithOxc } = await import("vite");
   const source = fs.readFileSync(path.join(__dirname, "../src/paper-writing-citations.ts"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export function/g, "function");
   const { code } = await transformWithOxc(source, "paper-writing-citations.ts");
-  citations = new Function(...Object.keys(bibliography), `${code.replace(/^export \{\};?$/gm, "")}\nreturn {prepareManuscriptCitation,manuscriptBibliographyPaths};`)(...Object.values(bibliography));
+  citations = new Function(...Object.keys(bibliography), `${code.replace(/^export \{\};?$/gm, "")}\nreturn {bibliographyKeys,prepareManuscriptCitation,manuscriptBibliographyPaths};`)(...Object.values(bibliography));
 });
 
 test("library metadata updates preserve a manuscript key, manual fields, other entries and directives", t => {
@@ -148,4 +148,14 @@ test("metadata replacement preserves trailing comments before a separator or clo
   const parsed = bibliography.parseBibliography(updated.content);
   assert.deepEqual(parsed.warnings, []);
   assert.equal(parsed.entries[0].paper.doi, paper.doi);
+});
+
+test("citation allocation respects active keys from other bibliography files", () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "reserve-alongside", citekey: "shared", entry_type: "article" };
+  const keys = citations.bibliographyKeys("@book{SHARED, title={Taken}}\n@comment{@book{shared_2, title={Disabled}}}\n");
+  assert.deepEqual(keys, ["SHARED"]);
+  const inserted = citations.prepareManuscriptCitation("", paper, true, keys);
+  assert.equal(inserted.citekey, "shared_2");
+  assert.equal(citations.prepareManuscriptCitation(inserted.content, { ...paper, title: "Later correction" }, true, keys).citekey, "shared_2");
+  assert.deepEqual(citations.manuscriptBibliographyPaths("% \\bibliography{ignored}\n\\bibliography{./refs,other}% note\n\\addbibresource{third.bib}", "paper/main.tex"), ["paper/refs.bib", "paper/other.bib", "paper/third.bib"]);
 });

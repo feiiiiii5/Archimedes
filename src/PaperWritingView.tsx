@@ -11,7 +11,7 @@ import { emitProactiveSignal } from "./proactive-signals";
 import { findSourceMatches, sourceMarksByLine, type SourceMark } from "./paper-source-search";
 import { createWritingDocument, createWritingScope, editWritingDocument, saveWritingDocument, readWritingLocation, rememberWritingLocation, type WritingScope } from "./paper-writing-state";
 import PaperWritingCitations, { type CitationAction } from "./PaperWritingCitations";
-import { manuscriptBibliographyPaths, prepareManuscriptCitation } from "./paper-writing-citations";
+import { bibliographyKeys, manuscriptBibliographyPaths, prepareManuscriptCitation } from "./paper-writing-citations";
 import type { BibliographyPaper } from "./bibliography";
 import "./paper-source-search.css";
 import "./paper-writing-workspace.css";
@@ -357,19 +357,35 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
     const targetOwner = selected.owner, directory = projectRoot(selected.mainPath);
     if (!bibPath.endsWith(".bib") || bibPath.startsWith("/") || bibPath.split(/[\\/]/).some(part => part === ".." || part.startsWith(".")) || directory && !bibPath.startsWith(`${directory}/`)) throw new Error(t("Choose a .bib file inside this manuscript folder."));
     targetOwner.fileOperationBusy = true; refreshScope();
+    const readSource = async (path: string) => {
+      try { return await bridge.readWorkspaceFile(targetOwner.workspace, path); }
+      catch (reason) {
+        if (!String(reason).includes("ENOENT")) throw reason;
+        return null;
+      }
+    };
+    const liveText = async (path: string) => {
+      const cached = targetOwner.documents.get(path);
+      if (cached && cached.draft !== cached.savedDraft) return cached.draft;
+      const version = cached?.version;
+      const disk = await readSource(path);
+      const current = targetOwner.documents.get(path);
+      if (current && (current !== cached || current.version !== version)) return current.draft;
+      return disk?.content ?? "";
+    };
     try {
+      const main = await liveText(selected.mainPath);
+      const included = manuscriptBibliographyPaths(main, selected.mainPath).filter(path => path !== bibPath);
+      const reservedKeys = (await Promise.all(included.map(async path => bibliographyKeys(await liveText(path))))).flat();
       const pending = targetOwner.documents.get(bibPath);
       if (pending) await pending.saveQueue;
       let bibliography = targetOwner.documents.get(bibPath);
       const clean = (document: typeof bibliography) => document?.saveState === "saved" && document.draft === document.savedDraft;
       if (!bibliography || clean(bibliography)) {
         const cached = bibliography, version = cached?.version;
-        let content: WorkspaceFilePreview;
-        try { content = await bridge.readWorkspaceFile(targetOwner.workspace, bibPath); }
-        catch (reason) {
-          if (!String(reason).includes("ENOENT")) throw reason;
-          content = { path: bibPath, name: bibPath.split("/").at(-1) || bibPath, kind: "text", content: "", size: 0, modifiedAt: "" };
-        }
+        const content: WorkspaceFilePreview = await readSource(bibPath) ?? {
+          path: bibPath, name: bibPath.split("/").at(-1) || bibPath, kind: "text", content: "", size: 0, modifiedAt: "",
+        };
         bibliography = targetOwner.documents.get(bibPath);
         if (!bibliography) {
           bibliography = createWritingDocument(targetOwner.workspace, content);
@@ -380,7 +396,7 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
           bibliography.version += 1;
         }
       }
-      const prepared = prepareManuscriptCitation(bibliography.draft, paper, action !== "insert");
+      const prepared = prepareManuscriptCitation(bibliography.draft, paper, action !== "insert", reservedKeys);
       if (action !== "insert") {
         editWritingDocument(bibliography, prepared.content);
         await saveWritingDocument(bibliography, bridge.writeWorkspaceFile, refreshScope);

@@ -42,3 +42,21 @@ changes. The new build (`260dbb0`) keeps both and preserves `fixture2026`.
 | Before | After |
 | --- | --- |
 | [Bibliography after two updates](bibliography-refresh-before.png) | [Bibliography keeps the DOI note and added entry](bibliography-refresh-after.png) |
+
+## Citation keys across bibliography files
+
+The main document declares `\bibliography{refs,other}` and already cites
+`shared` from `other.bib`. These matched 1560 × 980 Electron captures show
+inserting a library paper with the same suggested key into `refs.bib`. The old
+build (`bf2dc23`) reused `shared`. The fix allocated `shared_2`, preserving the
+old `\cite{shared}` and leaving `other.bib` byte-for-byte unchanged.
+
+An offline Tectonic/BibTeX comparison used the same roman fallback in both
+fixtures because the italic font was outside the local cache. The old BibTeX
+log reported a repeated entry and skipped the original book. The fixed fixture
+compiled with two bibliography items, `shared` for the original book and
+`shared_2` for the inserted paper, with no repeated-entry warning.
+
+| Before | After |
+| --- | --- |
+| [Two citations used the same key](multiple-files-before.png) | [The inserted citation has its own key](multiple-files-after.png) |

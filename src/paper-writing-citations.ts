@@ -84,7 +84,11 @@ function hasTrailingFieldSeparator(content: string, block: BibBlock) {
   return tail.startsWith(",");
 }
 
-export function prepareManuscriptCitation(content: string, paper: BibliographyPaper, update = true) {
+export function bibliographyKeys(content: string) {
+  return bibliographyBlocks(content).map(block => block.key);
+}
+
+export function prepareManuscriptCitation(content: string, paper: BibliographyPaper, update = true, reservedKeys: Iterable<string> = []) {
   const blocks = bibliographyBlocks(content), marker = `% Archimedes paper: ${encodeURIComponent(paper.id)}`;
   const markerAt = content.indexOf(marker);
   let existing = markerAt < 0 ? undefined : blocks.find(block => block.start > markerAt && !content.slice(markerAt + marker.length, block.start).trim());
@@ -101,8 +105,9 @@ export function prepareManuscriptCitation(content: string, paper: BibliographyPa
     const matched = matchBibliographyPaper(paper, parsed);
     if (matched) existing = blocks.find(block => block.key === matched.citekey);
   }
+  const occupied = new Set([...reservedKeys, ...blocks.map(block => block.key)].map(citationKeyIdentity));
   let citekey = existing?.key || citationKeyFor(paper), suffix = 2;
-  while (!existing && blocks.some(block => citationKeyIdentity(block.key) === citationKeyIdentity(citekey))) citekey = `${citationKeyFor(paper)}_${suffix++}`;
+  while (!existing && occupied.has(citationKeyIdentity(citekey))) citekey = `${citationKeyFor(paper)}_${suffix++}`;
   const generated = exportBibliography([{ ...paper, citekey }]);
   if (!update) return { content, citekey, changed: false, action: "kept" as const };
   if (!existing) return { content: `${content}${content && !content.endsWith("\n") ? "\n" : ""}\n${marker}\n${generated}`, citekey, changed: true, action: "added" as const };
@@ -130,6 +135,13 @@ export function prepareManuscriptCitation(content: string, paper: BibliographyPa
 
 export function manuscriptBibliographyPaths(content: string, mainPath: string) {
   const base = mainPath.split("/").slice(0, -1).join("/");
-  const names = [...content.matchAll(/\\(?:bibliography|addbibresource)(?:\[[^\]]*\])?\{([^}]+)\}/g)].flatMap(match => match[1].split(","));
-  return [...new Set(names.map(name => name.trim()).filter(name => name && !name.startsWith("/") && !name.split(/[\\/]/).includes("..")).map(name => `${base ? `${base}/` : ""}${name.endsWith(".bib") ? name : `${name}.bib`}`))];
+  const source = content.replace(/\\(?:\\|%)|%[^\r\n]*/g, value => value.startsWith("%") ? "" : value);
+  const names = [...source.matchAll(/\\(?:bibliography|addbibresource)(?:\[[^\]]*\])?\{([^}]+)\}/g)].flatMap(match => match[1].split(","));
+  const paths = new Set<string>();
+  for (const name of names.map(value => value.trim())) {
+    if (name.startsWith("/") || name.split(/[\\/]/).includes("..")) continue;
+    const relative = name.split("/").filter(part => part && part !== ".").join("/");
+    if (relative) paths.add(`${base ? `${base}/` : ""}${relative.endsWith(".bib") ? relative : `${relative}.bib`}`);
+  }
+  return [...paths];
 }

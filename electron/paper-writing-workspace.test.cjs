@@ -18,7 +18,7 @@ before(async () => {
   const bibliography = await import("../src/bibliography.ts");
   const citationSource = fs.readFileSync(path.join(__dirname, "../src/paper-writing-citations.ts"), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/export function/g, "function");
   const citationCode = (await transformWithOxc(citationSource, "paper-writing-citations.ts")).code;
-  const citations = new Function(...Object.keys(bibliography), `${citationCode.replace(/^export \{\};?$/gm, "")}\nreturn { citationKeyFor, prepareManuscriptCitation, manuscriptBibliographyPaths };`)(...Object.values(bibliography));
+  const citations = new Function(...Object.keys(bibliography), `${citationCode.replace(/^export \{\};?$/gm, "")}\nreturn { bibliographyKeys, citationKeyFor, prepareManuscriptCitation, manuscriptBibliographyPaths };`)(...Object.values(bibliography));
   const source = fs.readFileSync(path.join(__dirname, "../src/PaperWritingView.tsx"), "utf8");
   const icons = require("lucide-react");
   const names = source.match(/\{([^}]+)\} from "lucide-react"/)[1].split(",").map(name => name.trim());
@@ -550,4 +550,26 @@ test("preview addresses stay with the execution folder that produced the manuscr
   assert.equal(tokens.get(first), "/project-a");
   assert.equal(api.createPreviewToken(1, "/project-a"), first);
   assert.equal(tokens.get(second), "/project-b");
+});
+
+test("Writing reserves keys from every directly declared bibliography and writes only to the selected file", async t => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "shared" };
+  const f = await fixture(t, { bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] } });
+  const file = name => path.join(f.a, "paper", name);
+  const other = "@book{shared,title={Previously cited book},year={2024}}\n";
+  fs.writeFileSync(file("main.tex"), source("Earlier citation \\cite{shared}.\n\\bibliography{refs,other}\n"));
+  fs.writeFileSync(file("refs.bib"), "% The selected bibliography\n");
+  fs.writeFileSync(file("other.bib"), other);
+  await f.render(f.a);
+  await autoCompileOff();
+  const editor = document.querySelector('.latex-editor-textarea');
+  const position = editor.value.indexOf("\\bibliography"); editor.setSelectionRange(position, position);
+  await click("Insert citation");
+  await clickText("Insert citation and update .bib");
+  await settle();
+  assert.match(f.disk(f.a), /Earlier citation \\cite\{shared\}/);
+  assert.match(f.disk(f.a), /\\cite\{shared_2\}/);
+  assert.match(fs.readFileSync(file("refs.bib"), "utf8"), /@article\{shared_2,/);
+  assert.equal(fs.readFileSync(file("other.bib"), "utf8"), other);
+  assert.deepEqual(f.writes.filter(write => write.name.endsWith(".bib")).map(write => write.name), ["paper/refs.bib"]);
 });

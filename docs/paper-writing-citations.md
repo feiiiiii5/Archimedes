@@ -13,7 +13,8 @@ explicitly update it. Paths stay inside the selected main document's folder.
 An existing matching paper keeps the citation key already used by the
 manuscript. New entries use the library key, or a stable paper-ID key when none
 has been assigned. If another paper already occupies that key, a suffix is
-chosen. A small comment associates an updated entry with its library paper so
+chosen. Keys already used in the main document’s other declared bibliography
+files are reserved. A small comment associates an updated entry with its library paper so
 later metadata corrections retain the same manuscript key.
 
 Updating changes only metadata supplied by the selected library paper. Other
