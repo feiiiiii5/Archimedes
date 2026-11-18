@@ -13,7 +13,7 @@ import { createWritingDocument, createWritingScope, editWritingDocument, saveWri
 import "./paper-source-search.css";
 import "./paper-writing-workspace.css";
 import PaperWritingVersions from "./PaperWritingVersions";
-import type { ManuscriptVersionComparison, ManuscriptVersionScope } from "./paper-writing-history";
+import type { ManuscriptVersion, ManuscriptVersionComparison, ManuscriptVersionScope } from "./paper-writing-history";
 
 
 const EDITABLE = new Set(["tex", "bib", "bst", "cls", "sty", "cfg"]);
@@ -21,6 +21,10 @@ const ASSETS = new Set([...EDITABLE, "pdf", "png", "jpg", "jpeg", "webp"]);
 const ext = (value: string) => value.split(".").at(-1)?.toLowerCase() || "";
 const editable = (value: string) => EDITABLE.has(ext(value));
 const projectRoot = (value: string) => value.split("/").slice(0, -1).join("/");
+function versionTarget({ id, dataRoot, projectId, workspaceId, executionRoot, threadId, mainPath }: ManuscriptVersion) {
+  return { id, dataRoot, projectId, workspaceId, executionRoot, threadId, mainPath };
+}
+
 
 const BROWSER_MIN_WIDTH = 160;
 const BROWSER_MAX_WIDTH = 360;
@@ -314,38 +318,46 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
     setChooserOpen(false);
     setVersionOwner({ owner, context: { dataRoot, projectId, workspaceId, executionRoot: owner.workspace, threadId } });
   }
-  async function withSavedManuscript<T>(operation: (selection: NonNullable<typeof versionOwner>) => Promise<T>) {
+  async function withSavedManuscript<T>(operation: (selection: NonNullable<typeof versionOwner>, target?: WritingScope) => Promise<T>, version?: ManuscriptVersion) {
     const selected = versionOwner;
     if (!selected || versionsBusy) throw new Error(t("The manuscript is busy. Try again after saving."));
-    const target = selected.owner;
-    if (target.compileState === "compiling") throw new Error(t("Wait for the current compilation before changing key versions."));
+    const target = version
+      ? scopesRef.current.get(JSON.stringify([version.executionRoot, version.projectId]))
+      : selected.owner;
+    if (target?.compileState === "compiling") throw new Error(t("Wait for the current compilation before changing key versions."));
     setVersionsBusy(true);
     try {
-      await Promise.all([...target.documents.values()].map(document => saveWritingDocument(document, bridge.writeWorkspaceFile, refreshScope)));
-      return await operation(selected);
+      if (target) await Promise.all([...target.documents.values()].map(document => saveWritingDocument(document, bridge.writeWorkspaceFile, refreshScope)));
+      return await operation(selected, target);
     } finally { setVersionsBusy(false); }
   }
   async function restoreVersion(comparison: ManuscriptVersionComparison) {
-    await withSavedManuscript(async selected => {
+    const restored = versionTarget(comparison.version);
+    await withSavedManuscript(async (selected, target) => {
       if (!bridge.restoreManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
-      const { id, mainPath: restoredMain } = comparison.version;
-      const receipt = await bridge.restoreManuscriptVersion({ ...selected.context, mainPath: restoredMain, id, expectedSourceVersion: comparison.currentSourceVersion });
-      const paths = new Set([...receipt.restoredPaths, ...receipt.removedPaths]);
-      for (const name of paths) selected.owner.documents.delete(name);
-      selected.owner.compileSequence++; selected.owner.compileResult = null; selected.owner.compileState = "idle"; selected.owner.compileLog = ""; selected.owner.coedit = false;
+      const receipt = await bridge.restoreManuscriptVersion({ ...restored, expectedSourceVersion: comparison.currentSourceVersion });
+      if (!target) return;
+      for (const name of [...receipt.restoredPaths, ...receipt.removedPaths]) target.documents.delete(name);
+      target.compileSequence++; target.compileResult = null; target.compileState = "idle"; target.compileLog = ""; target.coedit = false;
       // Invalidate reads that began against the pre-restore directory tree.
-      for (const [directory, request] of selected.owner.directoryRequests) {
-        selected.owner.directoryRequests.set(directory, request + 1);
+      for (const [directory, request] of target.directoryRequests) {
+        target.directoryRequests.set(directory, request + 1);
       }
-      selected.owner.loading.clear();
-      if (restoredMain === selected.owner.mainPath) {
-        await loadDirectory(projectRoot(restoredMain) || ".", true);
-        await openFile(restoredMain);
+      target.loading.clear();
+      if (target !== selected.owner || activeCompileContext.current.owner !== target) {
+        ++target.openSequence; ++target.activationSequence;
+        target.pendingOpen = 0; target.pendingActivation = 0;
+        if (receipt.removedPaths.includes(target.selectedPath)) target.selectedPath = restored.mainPath;
+        return;
+      }
+      if (restored.mainPath === target.mainPath) {
+        await loadDirectory(projectRoot(restored.mainPath) || ".", true);
+        await openFile(restored.mainPath);
       } else {
-        await activateProject(restoredMain);
+        await activateProject(restored.mainPath);
       }
       await onRefresh();
-    });
+    }, comparison.version);
   }
 
   const refreshProjects = useCallback(async () => {
@@ -386,7 +398,7 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
     void refreshProjects();
     // A fresh root listing lets the existing expanded nodes reload their children.
     if (owner.activeProject) void loadDirectory(owner.activeProject, true);
-    if (owner.selectedPath && !owner.pendingActivation && !owner.pendingOpen) void openFile(owner.selectedPath, true);
+    if (owner.selectedPath && !owner.pendingActivation && !owner.pendingOpen) void openFile(owner.selectedPath, owner.documents.has(owner.selectedPath));
   }, [active, loadDirectory, openFile, owner, refreshProjects]);
   useEffect(() => {
     if (!activeProject || !mainPath || !file?.path) return;
@@ -691,16 +703,17 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
     {versionOwner && active && versionOwner.owner === owner && versionOwner.context.dataRoot === dataRoot &&
       versionOwner.context.workspaceId === workspaceId && versionOwner.context.threadId === threadId &&
       <PaperWritingVersions
+        executionRoot={versionOwner.context.executionRoot}
         onClose={() => setVersionOwner(null)}
         onList={async () => bridge.listManuscriptVersions ? bridge.listManuscriptVersions(versionOwner.context) : []}
         onSave={file && mainPath ? name => withSavedManuscript(async selected => {
           if (!bridge.saveManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
           return bridge.saveManuscriptVersion({ ...selected.context, mainPath, name });
         }) : undefined}
-        onCompare={version => withSavedManuscript(async selected => {
+        onCompare={version => withSavedManuscript(async () => {
           if (!bridge.compareManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
-          return bridge.compareManuscriptVersion({ ...selected.context, mainPath: version.mainPath, id: version.id });
-        })}
+          return bridge.compareManuscriptVersion(versionTarget(version));
+        }, version)}
         onRestore={restoreVersion}
       />}
     <div className={browserCollapsed && widePanes ? "paper-writing-workspace browser-collapsed" : "paper-writing-workspace"} ref={workspaceRef} style={paneStyle}>

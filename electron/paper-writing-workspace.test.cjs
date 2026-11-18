@@ -21,7 +21,7 @@ before(async () => {
   const names = source.match(/\{([^}]+)\} from "lucide-react"/)[1].split(",").map(name => name.trim());
   const scope = { React, ...React, ...helpers, ...search,
     ...Object.fromEntries(names.map(name => [name, icons[name]])),
-    useUISettings: () => ({ t: value => value }),
+    useUISettings: () => ({ t: (value, values) => values ? value.replace(/\{(\w+)\}/g, (match, name) => values[name] ?? match) : value }),
     Dialog: props => props.open ? React.createElement(props.as || "div", { role: "dialog", onSubmit: props.onSubmit }, props.children) : null,
     StateView: props => React.createElement("div", null, props.title, props.description, props.action),
     PaperTemplateLibrary: () => null, paperTemplates: [{ id: "fake" }], SharedNoteEditor: () => null,
@@ -51,7 +51,7 @@ function deferred() {
 }
 const source = label => `\\documentclass{article}\n\\begin{document}\n${label}\n\\end{document}\n`;
 async function fixture(t, overrides = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-writing-scope-"));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-writing-scope-")));
   const a = path.join(directory, "a"), b = path.join(directory, "b");
   for (const [root, label] of [[a, "Project A original"], [b, "Project B original"]]) {
     fs.mkdirSync(path.join(root, "paper"), { recursive: true });
@@ -81,10 +81,10 @@ async function fixture(t, overrides = {}) {
   };
   let reactRoot = createRoot(document.getElementById("root"));
   const render = (workspace, token = 1, filePath = "paper/main.tex") => React.act(async () => reactRoot.render(React.createElement(Writing, {
-    bridge, workspace, projectId: overrides.projectId || (workspace === a ? "a" : "b"), workspaceId: overrides.workspaceId, threadId: overrides.threadId === undefined ? (workspace === a ? "thread-a" : "thread-b") : overrides.threadId, openRequest: token === null ? null : { path: filePath, token }, onRefresh() {}, onAskAI() {},
+    bridge, workspace, dataRoot: overrides.dataRoot, projectId: overrides.projectId || (workspace === a ? "a" : "b"), workspaceId: overrides.workspaceId, threadId: overrides.threadId === undefined ? (workspace === a ? "thread-a" : "thread-b") : overrides.threadId, openRequest: token === null ? null : { path: filePath, token }, onRefresh() {}, onAskAI() {},
   })));
   t.after(async () => { await React.act(async () => reactRoot.unmount()); fs.rmSync(directory, { recursive: true, force: true }); });
-  return { a, b, render, restart: async workspace => { await React.act(async () => reactRoot.unmount()); reactRoot = createRoot(document.getElementById("root")); await render(workspace, null); }, reads, writes, compiles, disk: root => fs.readFileSync(path.join(root, "paper/main.tex"), "utf8"), progress: event => progress?.(event) };
+  return { directory, a, b, render, restart: async workspace => { await React.act(async () => reactRoot.unmount()); reactRoot = createRoot(document.getElementById("root")); await render(workspace, null); }, reads, writes, compiles, disk: root => fs.readFileSync(path.join(root, "paper/main.tex"), "utf8"), progress: event => progress?.(event) };
 }
 async function autoCompileOff() {
   const checkbox = document.querySelector('.paper-auto-compile input');
@@ -145,6 +145,58 @@ test("Writing names current drafts, compares modified sections, restores and con
   await edit(source("Continued after returning to the milestone")); await click("Recompile");
   assert.equal(f.disk(f.a), source("Continued after returning to the milestone"));
   assert.equal(f.compiles.at(-1).root, f.a);
+});
+
+test("Writing discovers and restores a chatless milestone in its original folder after changing the project default", async t => {
+  const { createWorkspaceStore } = require("./store.cjs");
+  const { registerPaperWritingCommands } = require("./paper-writing-commands.cjs");
+  const handlers = new Map();
+  const command = action => async input => handlers.get(`paper-writing:versions:${action}`)({}, input);
+  const config = { threadId: null, bridge: {
+    listManuscriptVersions: command("list"),
+    saveManuscriptVersion: command("save"),
+    compareManuscriptVersion: command("compare"),
+    restoreManuscriptVersion: command("restore"),
+  } };
+  const f = await fixture(t, config);
+  const store = createWorkspaceStore(f.directory);
+  try {
+    const project = store.createResearchProject({ name: "Manuscript", workspacePath: f.a });
+    config.dataRoot = f.directory;
+    config.projectId = project.id;
+    config.workspaceId = store.defaultProjectWorkspace(project.id).id;
+    registerPaperWritingCommands({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, store });
+
+    await f.render(f.a); await autoCompileOff();
+    await click("Key versions");
+    const input = document.querySelector(".paper-version-save input");
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(input, "Original folder milestone");
+      input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await clickText("Save key version");
+    await settle();
+    await click("Close key versions");
+    await edit(source("Unsaved change in the old folder"));
+
+    store.setResearchProjectWorkspace(project.id, f.b);
+    await f.render(f.b, 2);
+    await click("Key versions");
+    const row = [...document.querySelectorAll(".paper-version-row")].find(item => item.textContent.includes("Original folder milestone"));
+    assert.ok(row);
+    assert.match(row.textContent, /Saved in /);
+    await React.act(async () => row.click());
+    assert.match(document.querySelector(".paper-version-comparison pre").textContent, /Unsaved change in the old folder/);
+    await clickText("Restore this key version");
+    assert.ok(document.body.textContent.includes(`Key version restored in ${f.a}.`));
+    await click("Close key versions");
+    assert.equal(document.querySelector(".latex-editor-textarea").value, source("Project B original"));
+    assert.equal(f.disk(f.b), source("Project B original"));
+    assert.equal(f.disk(f.a), source("Project A original"));
+    store.setResearchProjectWorkspace(project.id, f.a);
+    await f.render(f.a, null); await settle();
+    assert.equal(document.querySelector(".latex-editor-textarea").value, source("Project A original"));
+  } finally { store.close(); }
 });
 
 test("restoring a key version refreshes expanded source folders without reopening Writing", async t => {

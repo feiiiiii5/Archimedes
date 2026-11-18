@@ -52,9 +52,17 @@ function listProjectManuscriptVersionOwners({ dataRoot, projectId }) {
   return versionIndex(dataRoot).filter(entry => entry.dataRoot === fs.realpathSync(dataRoot) && entry.projectId === projectId);
 }
 
+function readRegisteredVersion(entry) {
+  try { return readVersion(entry, entry.id); }
+  catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error;
+    return null;
+  }
+}
+
 function isRegisteredManuscriptOwner(input) {
   const owner = ownerFor(input);
-  return listProjectManuscriptVersionOwners(owner).some(entry => sameOwner(entry, owner) && Boolean(readVersion(owner, entry.id)));
+  return listProjectManuscriptVersionOwners(owner).some(entry => sameOwner(entry, owner) && Boolean(readRegisteredVersion(entry)));
 }
 
 function sameOwner(first, second) {
@@ -112,24 +120,31 @@ function saveManuscriptVersion(input) {
 }
 
 /** List only durable, explicitly named versions; compiler receipts are separate. */
-function listProjectManuscriptVersions(input) {
+function listProjectManuscriptVersions(input, registeredOwners = []) {
   const executionRoot = fs.realpathSync(input.executionRoot);
+  const dataRoot = fs.realpathSync(input.dataRoot || executionRoot);
   const base = storageTarget(executionRoot, ".archimedes/manuscript-history").target;
-  if (!fs.existsSync(base)) return [];
-  const versions = [];
-  for (const folder of fs.readdirSync(base, { withFileTypes: true })) {
+  const versions = new Map();
+  const folders = fs.existsSync(base) ? fs.readdirSync(base, { withFileTypes: true }) : [];
+  for (const folder of folders) {
     if (!folder.isDirectory() || !/^[a-f0-9]{24}$/.test(folder.name)) continue;
     for (const item of fs.readdirSync(path.join(base, folder.name), { withFileTypes: true })) {
       if (!item.isDirectory() || !validId(item.name)) continue;
       const file = path.join(base, folder.name, item.name, "manifest.json");
       if (!fs.existsSync(file)) continue;
       const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (manifest.projectId !== input.projectId || manifest.workspaceId !== input.workspaceId || manifest.executionRoot !== executionRoot
-        || input.mainPath && manifest.mainPath !== input.mainPath) continue;
-      versions.push(readVersion({ ...input, executionRoot, mainPath: manifest.mainPath }, manifest.id));
+      if (manifest.dataRoot !== dataRoot || manifest.projectId !== input.projectId || manifest.workspaceId !== input.workspaceId
+        || manifest.executionRoot !== executionRoot || input.mainPath && manifest.mainPath !== input.mainPath) continue;
+      versions.set(manifest.id, readVersion({ ...input, executionRoot, mainPath: manifest.mainPath }, manifest.id));
     }
   }
-  return versions.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+  for (const entry of registeredOwners) {
+    if (entry.dataRoot !== dataRoot || entry.projectId !== input.projectId || versions.has(entry.id)
+      || input.mainPath && entry.mainPath !== input.mainPath) continue;
+    const version = readRegisteredVersion(entry);
+    if (version) versions.set(version.id, version);
+  }
+  return [...versions.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
 }
 
 function compareManuscriptVersion(input) {

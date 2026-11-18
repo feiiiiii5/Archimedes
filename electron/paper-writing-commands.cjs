@@ -2,8 +2,8 @@ const { canonicalWorkspace, resolveResearchContext } = require("./workspace-cont
 const history = require("./paper-writing-history.cjs");
 
 function registerPaperWritingCommands({ ipcMain, store }) {
-  function owner(input) {
-    const selected = store.currentStore ? store.currentStore() : store;
+  const selectedStore = () => store.currentStore ? store.currentStore() : store;
+  function owner(input, selected = selectedStore()) {
     if (input.dataRoot && canonicalWorkspace(input.dataRoot) !== canonicalWorkspace(selected.workspace)) throw new Error("This manuscript belongs to another data workspace.");
     try {
       const context = resolveResearchContext(selected, { projectId: input.projectId, workspaceId: input.workspaceId, threadId: input.threadId || undefined, workspace: input.executionRoot });
@@ -18,7 +18,13 @@ function registerPaperWritingCommands({ ipcMain, store }) {
       return historical;
     }
   }
-  ipcMain.handle("paper-writing:versions:list", (_event, input = {}) => history.listProjectManuscriptVersions(owner(input)));
+  ipcMain.handle("paper-writing:versions:list", (_event, input = {}) => {
+    const selected = selectedStore();
+    const context = owner(input, selected);
+    const registered = history.listProjectManuscriptVersionOwners(context)
+      .filter(entry => selected.getProjectWorkspace(entry.workspaceId)?.project_id === context.projectId);
+    return history.listProjectManuscriptVersions(context, registered);
+  });
   ipcMain.handle("paper-writing:versions:save", (_event, input = {}) => history.saveManuscriptVersion({ ...owner(input), name: input.name }));
   ipcMain.handle("paper-writing:versions:compare", (_event, input = {}) => history.compareManuscriptVersion({ ...owner(input), id: input.id }));
   ipcMain.handle("paper-writing:versions:restore", (_event, input = {}) => history.restoreManuscriptVersion({ ...owner(input), id: input.id, expectedSourceVersion: input.expectedSourceVersion }));

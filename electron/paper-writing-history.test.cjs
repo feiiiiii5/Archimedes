@@ -64,14 +64,31 @@ test("comparison is refreshed for changed disk content, and commands keep projec
 
 test("a manuscript saved without a conversation remains owned and usable after the default folder moves", t => {
   const f = fixture(t), saved = f.command("save", { name: "Local writing milestone" });
-  const next = path.join(f.root, "new-default"); fs.mkdirSync(next);
+  const unrelated = f.store.createResearchProject({ name: "Other", workspacePath: f.root });
+  f.command("save", { projectId: unrelated.id, workspaceId: f.store.defaultProjectWorkspace(unrelated.id).id, name: "Another project's milestone" });
+  const otherData = path.join(f.root, "other-data");
+  fs.mkdirSync(otherData);
+  history.saveManuscriptVersion({ ...f.owner, dataRoot: otherData, name: "Another data folder's milestone" });
+  assert.deepEqual(f.command("list").map(version => version.id), [saved.id]);
+
+  const next = path.join(f.root, "new-default");
+  fs.mkdirSync(path.join(next, "paper"), { recursive: true });
+  fs.writeFileSync(path.join(next, "paper/main.tex"), "Independent new-folder manuscript.");
   f.store.setResearchProjectWorkspace(f.owner.projectId, next);
-  assert.equal(history.listProjectManuscriptVersionOwners({ dataRoot: f.root, projectId: f.owner.projectId })[0].executionRoot, f.root);
+  const current = f.command("save", { executionRoot: next, name: "New-folder milestone" });
+  const versions = f.command("list", { executionRoot: next, mainPath: undefined });
+  assert.deepEqual(new Set(versions.map(version => version.id)), new Set([saved.id, current.id]));
+  const discovered = versions.find(version => version.id === saved.id);
+  assert.equal(discovered.executionRoot, f.root);
+  assert.equal(discovered.threadId, null);
+  assert.throws(() => f.command("list", { dataRoot: otherData, executionRoot: next, mainPath: undefined }), /another data workspace/);
+
   fs.appendFileSync(path.join(f.root, "paper/sections/body.tex"), "Edit in the historical manuscript folder.\n");
-  const comparison = f.command("compare", { id: saved.id });
-  assert.ok(comparison.changes.length);
-  f.command("restore", { id: saved.id, expectedSourceVersion: comparison.currentSourceVersion });
-  assert.equal(f.command("compare", { id: saved.id }).changes.length, 0);
+  const comparison = f.command("compare", discovered);
+  assert.match(comparison.changes[0].patch, /Edit in the historical manuscript folder/);
+  f.command("restore", { ...discovered, expectedSourceVersion: comparison.currentSourceVersion });
+  assert.equal(f.command("compare", discovered).changes.length, 0);
+  assert.equal(fs.readFileSync(path.join(next, "paper/main.tex"), "utf8"), "Independent new-folder manuscript.");
   assert.equal(f.command("save", { name: "Continue in original folder", threadId: "unknown-thread" }).threadId, null, "a renderer cannot attach an unrelated thread through historical-owner recovery");
   assert.throws(() => f.command("list", { mainPath: "unregistered/main.tex" }), /does not match/);
 });
