@@ -103,3 +103,34 @@ test("owner-only review feedback stays private after its source is shared, and a
   assert.equal(withoutSource.visibility, "private");
   assert.equal(withoutSource.based_on_thread_id, null);
 });
+
+test("revision from an archived source chat keeps the manuscript folder after the project moves", async (t) => {
+  const f = await fixture(t);
+  const { registerThreadCommands } = require("./thread-commands.cjs");
+  const { resolveResearchContext } = require("./workspace-context.cjs");
+  const handlers = new Map();
+  registerThreadCommands({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, store, dataWorkspace: () => f.dataRoot });
+  const createThread = (input) => f.database.run(() => handlers.get("research-thread:create")({}, input));
+  f.scope.desktopBridge.createResearchThread = async (input) => createThread(input);
+
+  f.database.archiveResearchThread(f.origin.threadId);
+  const archived = f.database.getResearchThread(f.origin.threadId);
+  assert.ok(archived.archived_at);
+  assert.equal(f.database.defaultProjectWorkspace(f.project.id).root, f.newRoot);
+  f.scope.taskSelectionRef.current = { ...f.selection, threadId: null, executionRoot: f.newRoot };
+  f.scope.openManuscriptChat = await actualAppFunction("openManuscriptChat", f.scope);
+  const revise = await actualAppFunction("draftManuscriptRevision", f.scope);
+  await revise({ id: "archive-review", manuscript: { ...f.origin, privateOwnerId: archived.owner_id } }, [{ text: "Explain the baseline", page: 3 }]);
+
+  const target = f.scope.taskSelectionRef.current;
+  const thread = f.database.getResearchThread(target.threadId);
+  assert.equal(target.executionRoot, f.oldRoot);
+  assert.equal(thread.based_on_thread_id, archived.id);
+  assert.equal(thread.archived_at, null);
+  assert.equal(thread.visibility, "private");
+  assert.match(f.drafts.get(f.taskDraftKey(target)).text, /Explain the baseline/);
+  assert.equal(f.contexts.get(f.taskDraftKey(target))[0].path, path.join(f.oldRoot, "paper/section.tex"));
+  assert.equal(f.database.getResearchThread(archived.id).archived_at, archived.archived_at);
+  assert.throws(() => resolveResearchContext(f.database, { threadId: archived.id }), /Restore this conversation/);
+  assert.throws(() => createThread({ basedOnThreadId: archived.id, workspacePath: f.newRoot }), /execution folder does not match/);
+});

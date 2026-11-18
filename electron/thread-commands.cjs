@@ -56,7 +56,9 @@ function registerThreadCommands({ ipcMain, store, agent, modelConfig, dialog, Br
   ipcMain.handle("research-thread:create", (event, input = {}) => {
     store.openWorkspace(dataWorkspace(event, input));
     const { resolveResearchContext } = require("./workspace-context.cjs");
-    const context = resolveResearchContext(store.currentStore(), { projectId: input.projectId, workspaceId: input.workspaceId, threadId: input.basedOnThreadId, workspace: input.workspacePath });
+    const context = resolveResearchContext(store.currentStore(), {
+      projectId: input.projectId, workspaceId: input.workspaceId, threadId: input.basedOnThreadId, workspace: input.workspacePath,
+    }, { allowArchivedSource: true });
     const thread = store.createResearchThread({
       prompt: "New conversation",
       title: typeof input.title === "string" ? input.title : "New conversation",

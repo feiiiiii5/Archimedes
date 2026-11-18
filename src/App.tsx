@@ -3175,7 +3175,7 @@ function App() {
           catch (reason) { if (!/not found|no longer exists/i.test(String(reason))) throw reason; }
         }
         if (taskSelectionRef.current.dataRoot !== source.dataRoot || dataFolderLoadingRef.current) throw new Error(t("Return to the manuscript data folder before continuing."));
-        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: sourceThread?.archived_at ? undefined : sourceThread?.id, visibility, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
+        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: sourceThread?.id, visibility, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
       })();
       manuscriptChatsRef.current.set(cacheKey, pending);
     }

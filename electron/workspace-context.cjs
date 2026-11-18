@@ -20,9 +20,9 @@ function canonicalWorkspace(value) {
 }
 
 /** A window selects the data store; project/session records select execution. */
-function resolveResearchContext(store, input = {}) {
+function resolveResearchContext(store, input = {}, { allowArchivedSource = false } = {}) {
   const thread = input.threadId ? store.getResearchThread(input.threadId) : null;
-  if (thread?.archived_at) throw new Error("Restore this conversation before continuing it.");
+  if (thread?.archived_at && !allowArchivedSource) throw new Error("Restore this conversation before continuing it.");
   if (thread && input.projectId && input.projectId !== thread.project_id) throw new Error("The conversation does not belong to the selected project.");
   const projectId = thread?.project_id || input.projectId;
   const project = projectId ? store.getResearchProject(projectId) : store.defaultResearchProject();
