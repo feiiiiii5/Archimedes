@@ -16,19 +16,39 @@ const thread = (id, project = id) => ({ id, project_id: project, workspace_id: `
 async function callbacks(names, overrides = {}) {
   const helpers = { ...await import('../src/task-selection.ts'), ...await import('../src/composer-session.ts') };
   const state = { sessions: {}, displayed: [], messages: [], events: [], threads: [], busy: false };
+  const composerSessionsRef = overrides.composerSessionsRef ?? { current: {} };
+  const composerKeyAliasesRef = overrides.composerKeyAliasesRef ?? { current: {} };
+  const queuedPromptScopesRef = overrides.queuedPromptScopesRef ?? { current: {} };
+  const composerDrafts = new Map();
   const scope = {
     ...helpers, crypto: global.crypto, t: text => text,
+    composerSessionsRef, composerKeyAliasesRef, queuedPromptScopesRef, noteValuesRef: { current: {} },
+    composerAttachmentOwnersRef: { current: new Map() },
+    readComposerDraft: key => composerDrafts.get(key) ?? null,
+    writeComposerDraft: (key, value) => value ? composerDrafts.set(key, value) : composerDrafts.delete(key),
     taskSelectionRef: { current: owner('a') }, dataFolderLoadingRef: { current: false }, activeThreadIdRef: { current: 'a' }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 },
     analysisSessionsRef: { current: new Map() }, analysisHandoffsRef: { current: new Map() }, workspaces: [],
+    initialMessages: [],
     researchMode: 'free-chat', reasoningEffort: 'medium', contextLength: 'standard', contextItems: [], activeThreadId: 'a',
     threadVisibility: 'project', selectedHarness: 'api', selectedNativeBackend: null, agentBusy: false,
     clearPendingAssistantDeltas() {}, setResearchMode() {}, setInterrupting() {}, setRunningOwnerKey() {}, setRunningThreadId() {}, setBoundHarness() {},
     setAgentBusy(value) { state.busy = value; }, setNativeStream() {}, setNativeQuestions() {}, setMainSection() {}, setPendingAction() {}, setTrajectoryEvents() {}, setChangeSets() {},
+    setTaskSelection(value) { state.taskSelection = value; }, setSelectionError(value) { state.selectionError = value; },
     setEvents(value) { state.events = typeof value === 'function' ? value(state.events) : value; },
     setMessages(value) { state.messages = typeof value === 'function' ? value(state.messages) : value; },
     setThreads(update) { state.threads = update(state.threads); },
-    updateComposer(key, update) { state.sessions = helpers.updateComposerSession(state.sessions, key, update); },
+    setComposerSessions(value) { state.sessions = value; },
+    updateComposer(key, update) {
+      const resolvedKey = helpers.resolveComposerKey(composerKeyAliasesRef.current, key);
+      composerSessionsRef.current = helpers.updateComposerSession(composerSessionsRef.current, resolvedKey, update);
+      state.sessions = composerSessionsRef.current;
+    },
     setContextItems(update, key) { scope.updateComposer(key, session => ({ ...session, items: update(session.items) })); },
+    updateQueuedPrompts(key, update) {
+      const resolvedKey = helpers.resolveComposerKey(composerKeyAliasesRef.current, key);
+      const current = queuedPromptScopesRef.current[resolvedKey] ?? [];
+      queuedPromptScopesRef.current = { ...queuedPromptScopesRef.current, [resolvedKey]: typeof update === 'function' ? update(current) : update };
+    },
     applyTaskSelection(value) { state.displayed.push(value); scope.taskSelectionRef.current = value; },
     displayThread(value) { state.displayed.push(value); },
     desktopBridge: {}, ...overrides,
@@ -153,4 +173,48 @@ test('failed send restoration keeps the failed prompt and later typing in the or
     assert.equal(prompt, saved.get('owner-a').text);
     assert.equal(saved.get('owner-b').text, 'Keep B typing');
   }
+});
+
+test('an attachment that resolves after a new session is created joins that session, and the next draft is independent', async () => {
+  const { taskDraftKey } = await import('../src/task-selection.ts');
+  const runningGate = deferred(), attachmentGate = deferred();
+  const draftOwner = { ...owner('a'), threadId: null };
+  const sourceKey = taskDraftKey(draftOwner);
+  const h = await callbacks(['submitPrompt', 'moveNewTaskComposer', 'updateComposer', 'composerAttachmentCallback', 'applyTaskSelection', 'queueComposerText'], {
+    taskSelectionRef: { current: draftOwner },
+    desktopBridge: { runAgent: () => runningGate.promise },
+  });
+  const earlyAttachment = { id: 'early-a-file', name: 'early.txt' }, lateAttachment = { id: 'late-a-file', name: 'late.txt' };
+  h.scope.updateComposer(h.key('b'), current => ({ ...current, items: [{ id: 'b-file', name: 'b.txt' }] }));
+
+  const submitting = h.submitPrompt('A brand-new question');
+  // The attachment upload began while the composer still had the temporary key.
+  const attachToOriginal = h.composerAttachmentCallback(sourceKey);
+  const lateAttachmentArrives = attachmentGate.promise.then(() => attachToOriginal([lateAttachment]));
+  h.updateComposer(sourceKey, current => ({ ...current, items: [...current.items, earlyAttachment] }));
+
+  runningGate.resolve({ threadId: 'created-a', thread: thread('created-a', 'a'), actions: [] });
+  assert.equal(await submitting, true);
+  const createdKey = h.threadKey('created-a', 'a');
+  assert.deepEqual(h.state.sessions[createdKey].items.map(item => item.id), ['early-a-file']);
+  assert.deepEqual(h.state.sessions[sourceKey].items, [], 'the temporary draft was drained');
+  assert.equal(h.state.sessions[sourceKey].request, null);
+  assert.deepEqual(h.state.sessions[h.key('b')].items.map(item => item.id), ['b-file']);
+
+  h.queueComposerText(sourceKey, 'Late handoff');
+  assert.equal(h.state.sessions[createdKey].request.text, 'Late handoff', 'a delayed pending request follows the same redirect');
+  assert.equal(h.state.sessions[sourceKey].request, null);
+
+  // Starting a new draft at the same project key clears the redirect for that key.
+  h.applyTaskSelection({ ...draftOwner });
+  assert.equal(taskDraftKey(h.scope.taskSelectionRef.current), sourceKey);
+  const attachToNewDraft = h.composerAttachmentCallback(sourceKey);
+  attachToNewDraft([{ id: 'next-a-file', name: 'next.txt' }]);
+  h.queueComposerText(sourceKey, 'Next draft handoff');
+  attachmentGate.resolve();
+  await lateAttachmentArrives;
+  assert.deepEqual(h.state.sessions[sourceKey].items.map(item => item.id), ['next-a-file']);
+  assert.equal(h.state.sessions[sourceKey].request.text, 'Next draft handoff');
+  assert.deepEqual(h.state.sessions[createdKey].items.map(item => item.id), ['early-a-file', 'late-a-file']);
+  assert.equal(h.state.sessions[createdKey].request.text, 'Late handoff');
 });
