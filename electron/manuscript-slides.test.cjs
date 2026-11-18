@@ -54,4 +54,3 @@ test("slides copy a historical manuscript to the real target session root with a
   assert.ok(fs.readFileSync(staged).subarray(0, 4).equals(Buffer.from("%PDF")));
   assert.equal(JSON.parse(fs.readFileSync(snapshot)).pdf.sha256, f.origin.pdfSha256);
 });
-
