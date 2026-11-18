@@ -179,6 +179,7 @@ type LibraryViewProps = {
   initialDailyMode?: DailyDiscoveryMode | "conference";
   workspace?: string;
   executionWorkspace?: string;
+  workspaceId?: string | null;
   active?: boolean;
   projectId?: string | null;
   libraryRefreshVersion?: number;
@@ -189,12 +190,12 @@ type LibraryViewProps = {
 };
 
 export default function LibraryView(props: LibraryViewProps) {
-  const { bridge, mode, initialDailyMode, workspace = "", executionWorkspace = "", active = true, projectId, libraryRefreshVersion = 0, onLibraryImported, onInternalReviewThreadsDeleted, onReproduceOpened, onOpenProject } = props;
+  const { bridge, mode, initialDailyMode, workspace = "", executionWorkspace = "", workspaceId, active = true, projectId, libraryRefreshVersion = 0, onLibraryImported, onInternalReviewThreadsDeleted, onReproduceOpened, onOpenProject } = props;
   if (mode === "library") return <LibraryWorkspace
     key={`${workspace}:${projectId || "local"}`}
     bridge={bridge} executionWorkspace={executionWorkspace} projectId={projectId} active={active} refreshVersion={libraryRefreshVersion}
     onLibraryImported={onLibraryImported} onOpenProject={onOpenProject}
-    renderReader={(readerProps) => <PaperReadingWorkbench {...readerProps} bridge={bridge} workspace={workspace} projectId={projectId} onInternalReviewThreadsDeleted={onInternalReviewThreadsDeleted} onReproduceOpened={onReproduceOpened} />}
+    renderReader={(readerProps) => <PaperReadingWorkbench {...readerProps} bridge={bridge} workspace={workspace} workspaceId={workspaceId} projectId={projectId} onInternalReviewThreadsDeleted={onInternalReviewThreadsDeleted} onReproduceOpened={onReproduceOpened} />}
     renderInspector={(inspectorProps) => <PaperInspector {...inspectorProps} />}
     renderEditor={(editorProps) => <LibraryEditor {...editorProps} active={active} />}
     renderImport={(importProps) => <PaperImportModal {...importProps} bridge={bridge} workspace={workspace} />}
@@ -460,11 +461,11 @@ const PaperChatComposer = memo(function PaperChatComposer({ busy, cancelling, ca
   </div>;
 });
 
-function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, workspace, executionWorkspace, projectId, onInternalReviewThreadsDeleted, onReproduceOpened, session, onSessionSave, onActivityChange, noteDrafts }: {
+function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, workspace, executionWorkspace, workspaceId, projectId, onInternalReviewThreadsDeleted, onReproduceOpened, session, onSessionSave, onActivityChange, noteDrafts }: {
   paper: ReaderLibraryPaper; library: ResearchLibrary; onBack: () => void;
   session?: PaperReaderSession; onSessionSave: (session: PaperReaderSession) => void; onActivityChange: (busy: boolean) => void; noteDrafts: LibraryNoteDrafts;
   onUpdate: (patch: Parameters<ResearchDeskBridge["updateLibraryPaper"]>[1]) => Promise<void>;
-  bridge: ResearchDeskBridge; workspace: string; executionWorkspace: string; projectId?: string | null; onInternalReviewThreadsDeleted?: (threadIds: string[]) => void; onReproduceOpened?: (reproductionId: string) => void;
+  bridge: ResearchDeskBridge; workspace: string; executionWorkspace: string; workspaceId?: string | null; projectId?: string | null; onInternalReviewThreadsDeleted?: (threadIds: string[]) => void; onReproduceOpened?: (reproductionId: string) => void;
 }) {
   const { language, t } = useUISettings();
   const [reader, setReader] = useState<PaperReaderState | null>(null);
@@ -890,6 +891,7 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
       const result = await bridge.runAgent({
         prompt: instruction,
         workspace: executionRoot,
+        workspaceId: chatThreadId ? undefined : workspaceId || undefined,
         threadId: chatThreadId,
         projectId: projectId || undefined,
         mode: options.initialBriefing || aiMode === "audit" ? "deep-research" : "free-chat",
