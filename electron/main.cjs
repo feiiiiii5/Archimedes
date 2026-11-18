@@ -83,6 +83,7 @@ const sidebarPlugins = require("./sidebar-plugins.cjs");
 const commandSessions = new Map();
 const interactiveTerminalSessions = new Map();
 const windowWorkspaces = new Map();
+const windowStartupWorkspaces = new Map();
 const windowPreviewTokens = new Map();
 const previewTokenWorkspaces = new Map();
 const workspaceWatchers = new Map();
@@ -299,7 +300,7 @@ function createWindow(workspace) {
     });
     if (browserTab) hardenBrowserSession(guestContents.session);
   });
-  if (workspace) setWindowWorkspace(senderId, resolveWorkspace(workspace));
+  if (workspace) windowStartupWorkspaces.set(senderId, resolveWorkspace(workspace));
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
@@ -314,6 +315,7 @@ function createWindow(workspace) {
     void presence?.leave(String(senderId));
     for (const token of windowPreviewTokens.get(senderId)?.values() ?? []) previewTokenWorkspaces.delete(token);
     windowPreviewTokens.delete(senderId);
+    windowStartupWorkspaces.delete(senderId);
     windowWorkspaces.delete(senderId);
   });
 
@@ -530,7 +532,7 @@ function installedPlugins() {
   return results.sort((left, right) => left.name.localeCompare(right.name)).slice(0, 80);
 }
 
-async function sanitizeAgentContext(items, workspace) {
+async function sanitizeAgentContext(items, workspace, libraryRoot = workspace) {
   if (!Array.isArray(items)) return [];
   const sanitized = [];
   for (const item of items.slice(0, 12)) {
@@ -558,7 +560,7 @@ async function sanitizeAgentContext(items, workspace) {
       });
       let checkout = null;
       if (repository.audit === true) {
-        try { checkout = await getRepositoryCheckout(workspace, repository.url); }
+        try { checkout = await getRepositoryCheckout(libraryRoot, repository.url); }
         catch { checkout = null; }
       }
       sanitized.push({
@@ -738,7 +740,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("window:initial-workspace", (event) => {
-    return windowWorkspaces.get(event.sender.id) ?? null;
+    return windowWorkspaces.get(event.sender.id) ?? windowStartupWorkspaces.get(event.sender.id) ?? null;
   });
 
   ipcMain.handle("window:set-titlebar-theme", (event, theme) => {
@@ -932,12 +934,11 @@ app.whenReady().then(async () => {
     return { filename: "SKILL.md", content: fs.readFileSync(manifest, "utf8") };
   });
 
-  ipcMain.handle("workspace:open", (event, requestedWorkspace) => {
-    const workspace = resolveWorkspace(requestedWorkspace);
+  ipcMain.handle("workspace:open", (event) => {
     const snapshot = store.getSnapshot();
-    rememberWorkspace(workspace);
-    watchWorkspace(event.sender, workspace);
-    setWindowWorkspace(event.sender.id, workspace);
+    rememberWorkspace(snapshot.workspace);
+    watchWorkspace(event.sender, snapshot.workspace);
+    setWindowWorkspace(event.sender.id, snapshot.workspace);
     return snapshot;
   });
 
@@ -1699,7 +1700,10 @@ app.whenReady().then(async () => {
     return deepSearchPapers(input, { modelConfig: modelConfig.getActiveModelConfig() });
   });
 
-  ipcMain.handle("benchmark-radar:get-data", () => getBenchmarkRadarData({
+  ipcMain.handle("benchmark-radar:get-data", (_event, input) => getBenchmarkRadarData({
+    allowNetwork: input?.cachedOnly !== true,
+    force: input?.refresh === true,
+    fetchImpl: (...args) => net.fetch(...args),
     cachePath: path.join(app.getPath("userData"), "benchmark-radar", "public-index.json"),
     seedPath: path.join(__dirname, "assets", "benchmark-radar", "public-index.json"),
   }));
@@ -1711,6 +1715,10 @@ app.whenReady().then(async () => {
     if (paper.title.length > 1000 || String(paper.abstract || "").length > 100_000) throw new Error("Paper metadata is too large.");
     return store.addPaper(libraryId, paper);
   });
+
+  ipcMain.handle("library:get-bibliography", (_event, { paperId }) => store.getPaperBibliography(paperId));
+  ipcMain.handle("library:set-bibliography", (_event, { paperId, patch }) => store.setPaperBibliography(paperId, patch));
+  ipcMain.handle("library:repair-metadata", (_event, { paperId, patch }) => store.repairLibraryPaperMetadata(paperId, patch));
 
   ipcMain.handle("library:import-local-pdf", async (event, { libraryId, workspace } = {}) => {
     if (typeof libraryId !== "string") throw new Error("Choose a library before importing a paper.");
@@ -1889,7 +1897,7 @@ app.whenReady().then(async () => {
     // Research data stays in the window's primary workspace, while the Agent
     // operates inside the project/session folder.
     const context = resolveResearchContext(store.currentStore(), { ...input, workspace });
-    const contextItems = await sanitizeAgentContext(input.contextItems, context.workspace);
+    const contextItems = await sanitizeAgentContext(input.contextItems, context.workspace, input.origin === "paper" ? context.dataRoot : context.workspace);
     const clientRunId = typeof input.clientRunId === "string" && input.clientRunId ? input.clientRunId : undefined;
     const configuredBackend = agentBackendConfig.get();
     const selectedBackend = input.backend || configuredBackend.backend;
