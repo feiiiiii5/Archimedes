@@ -18,8 +18,11 @@ Select a version to compare it with the saved current manuscript. The view
 lists added, removed and modified files, shows text diffs, and identifies changed
 binary assets. **Restore this key version** restores those saved file bytes and
 removes files added since that version, as shown in the comparison. Current
-content is saved as a “Before restoring …” return version. If editing or another
-program changed files after comparison, refresh the comparison before restoring.
+content is saved as a “Before restoring …” return version. This works when the
+main file was moved or removed and when a manuscript path changed from a file
+to a directory or back. If the conversion would displace files outside the
+comparison, restoration stops before changing the manuscript. If editing or
+another program changed files after comparison, refresh the comparison first.
 
 Restoration reloads the editor and clears the old PDF preview. Continue editing
 and recompile normally; review/slides still require a fresh matching build
