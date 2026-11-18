@@ -385,12 +385,62 @@ test("Writing inserts a project-library citation and explicitly refreshes its bi
   assert.ok(f.disk(f.a).includes(`\\cite{${citekey}}`));
   assert.equal(db.getPaperBibliography(paper.id).citekey, "", "inserting uses the stable fallback without changing the library key");
   const first = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8"); assert.ok(first.startsWith(manual)); assert.match(first, /Evidence handoff fixture/);
+  const bibliographyPath = path.join(f.a, "paper/references.bib");
+  const external = "@book{fromEditor,title={An external editor added a reference}}\n";
+  const afterReturn = "@book{afterReturn,title={Another reference added while Writing was hidden}}\n";
+  fs.appendFileSync(bibliographyPath, external);
+  await clickText("Update .bib only");
+  assert.ok(fs.readFileSync(bibliographyPath, "utf8").includes(external));
   db.repairLibraryPaperMetadata(paper.id, { title: "Corrected source metadata" });
   await click("Close citations");
+  await f.render(f.b, 2);
+  fs.appendFileSync(bibliographyPath, afterReturn);
+  await f.render(f.a, 3);
+  await settle();
   await click("Insert citation"); await chooseReference("Corrected source metadata"); await clickText("Update .bib only");
   const updated = fs.readFileSync(path.join(f.a, "paper/references.bib"), "utf8");
   assert.ok(updated.startsWith(manual)); assert.match(updated, /Corrected source metadata/); assert.equal((updated.match(/@article\{/g) || []).length, 1);
+  assert.ok(updated.includes(external));
+  assert.ok(updated.includes(afterReturn));
+  assert.equal(f.reads.filter(read => read.root === f.a && read.name === "paper/references.bib").length, 3);
   assert.equal(f.disk(f.a).split(`\\cite{${citekey}}`).length - 1, 1, "metadata updates do not insert another citation");
+});
+
+test("an in-flight bibliography refresh does not replace a newer Writing draft", async t => {
+  const pendingRead = deferred();
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "library-paper", citekey: "libraryKey" };
+  const bib = "paper/references.bib";
+  let deferNext = false, oldPreview;
+  const f = await fixture(t, {
+    bridge: { listLibraries: async () => [{ id: "library" }], listLibraryPapers: async () => [paper] },
+    read: async (root, name, preview) => {
+      if (deferNext && name === bib) {
+        deferNext = false;
+        oldPreview = preview(root, name);
+        return pendingRead.promise;
+      }
+      return preview(root, name);
+    },
+  });
+  const pathname = path.join(f.a, bib);
+  fs.writeFileSync(pathname, "@book{disk,title={Saved reference}}\n");
+  await f.render(f.a);
+  await autoCompileOff();
+  await click("Insert citation");
+  await clickText("Update .bib only");
+  await settle();
+  deferNext = true;
+  await clickText("Update .bib only");
+  assert.ok(oldPreview, "the second action fetches disk even though the bibliography is cached");
+  await f.render(f.a, 2, bib);
+  const newDraft = oldPreview.content + "% A newer unsaved Writing edit\n";
+  await edit(newDraft, bib);
+  await React.act(async () => pendingRead.resolve(oldPreview));
+  await settle();
+  const saved = fs.readFileSync(pathname, "utf8");
+  assert.ok(saved.includes("% A newer unsaved Writing edit"));
+  assert.match(saved, /@article\{libraryKey,/);
+  assert.equal(document.querySelector(`[aria-label="Edit ${bib}"]`).value, saved);
 });
 
 test("returning to a clean cached manuscript reloads external edits before the next save", async t => {

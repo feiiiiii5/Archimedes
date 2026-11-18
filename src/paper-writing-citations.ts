@@ -52,10 +52,10 @@ function bibliographyBlocks(text: string): BibBlock[] {
       if (!field) { while (cursor < text.length && text[cursor] !== close) cursor++; continue; }
       cursor += field[0].length;
       const valueStart = cursor;
-      let braces = 0, quote = false, concatenated = false;
+      let braces = 0, quote = false, concatenated = false, valueEnd = cursor;
       while (cursor < text.length) {
         const character = text[cursor];
-        if (character === "\\") { cursor += 2; continue; }
+        if (character === "\\") { cursor += 2; valueEnd = cursor; continue; }
         if (!quote && braces === 0) {
           if (character === "," || character === close) break;
           if (character === "#") concatenated = true;
@@ -65,8 +65,9 @@ function bibliographyBlocks(text: string): BibBlock[] {
         else if (character === "}" && braces > 0) braces--;
         else if (character === '"' && braces === 0) quote = !quote;
         cursor++;
+        if (!/\s/.test(character)) valueEnd = cursor;
       }
-      fields.push({ name: field[1].toLowerCase(), valueStart, valueEnd: cursor, concatenated });
+      fields.push({ name: field[1].toLowerCase(), valueStart, valueEnd, concatenated });
     }
   }
   return blocks;
@@ -78,7 +79,7 @@ export function citationKeyFor(paper: BibliographyPaper) {
 
 function hasTrailingFieldSeparator(content: string, block: BibBlock) {
   const lastField = block.fields[block.fields.length - 1];
-  if (!lastField) return content.slice(block.start, block.fieldsEnd).trimEnd().endsWith(",");
+  if (!lastField) return true; // The parsed entry header already contains the key separator.
   const tail = content.slice(lastField.valueEnd, block.fieldsEnd).replace(/%[^\n]*/g, "").trimStart();
   return tail.startsWith(",");
 }

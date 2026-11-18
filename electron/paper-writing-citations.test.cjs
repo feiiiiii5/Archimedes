@@ -136,3 +136,16 @@ test("quoted parentheses in a directive preserve the existing key and venue fiel
   assert.match(update.content, /journal\s*=\s*\{Local fixture\}/);
   assert.doesNotMatch(update.content, /booktitle\s*=/);
 });
+
+test("metadata replacement preserves trailing comments before a separator or closing delimiter", async () => {
+  const paper = { ...require("./test-support/bibliography-fixture.cjs").paper, id: "field-comments", citekey: "libraryKey", entry_type: "article" };
+  const original = `@article{handKey,\n title={Original title}  % Keep the title note\n ,\n doi={${paper.doi}} % IMPORTANT COMMENT\n}\n`;
+  const updated = citations.prepareManuscriptCitation(original, paper);
+  assert.equal(updated.citekey, "handKey");
+  assert.match(updated.content, /title=\{Evidence handoff fixture\}  % Keep the title note\n ,/);
+  assert.ok(updated.content.includes(`doi={${paper.doi}} % IMPORTANT COMMENT\n`));
+  const bibliography = await import("../src/bibliography.ts");
+  const parsed = bibliography.parseBibliography(updated.content);
+  assert.deepEqual(parsed.warnings, []);
+  assert.equal(parsed.entries[0].paper.doi, paper.doi);
+});

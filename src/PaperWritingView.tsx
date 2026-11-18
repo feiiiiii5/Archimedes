@@ -352,15 +352,27 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
     if (!bibPath.endsWith(".bib") || bibPath.startsWith("/") || bibPath.split(/[\\/]/).some(part => part === ".." || part.startsWith(".")) || directory && !bibPath.startsWith(`${directory}/`)) throw new Error(t("Choose a .bib file inside this manuscript folder."));
     targetOwner.fileOperationBusy = true; refreshScope();
     try {
+      const pending = targetOwner.documents.get(bibPath);
+      if (pending) await pending.saveQueue;
       let bibliography = targetOwner.documents.get(bibPath);
-      if (!bibliography) {
+      const clean = (document: typeof bibliography) => document?.saveState === "saved" && document.draft === document.savedDraft;
+      if (!bibliography || clean(bibliography)) {
+        const cached = bibliography, version = cached?.version;
         let content: WorkspaceFilePreview;
         try { content = await bridge.readWorkspaceFile(targetOwner.workspace, bibPath); }
         catch (reason) {
           if (!String(reason).includes("ENOENT")) throw reason;
           content = { path: bibPath, name: bibPath.split("/").at(-1) || bibPath, kind: "text", content: "", size: 0, modifiedAt: "" };
         }
-        bibliography = createWritingDocument(targetOwner.workspace, content); targetOwner.documents.set(bibPath, bibliography);
+        bibliography = targetOwner.documents.get(bibPath);
+        if (!bibliography) {
+          bibliography = createWritingDocument(targetOwner.workspace, content);
+          targetOwner.documents.set(bibPath, bibliography);
+        } else if (bibliography === cached && bibliography.version === version && clean(bibliography)) {
+          bibliography.file = content;
+          bibliography.savedDraft = bibliography.draft = content.content ?? "";
+          bibliography.version += 1;
+        }
       }
       const prepared = prepareManuscriptCitation(bibliography.draft, paper, action !== "insert");
       if (action !== "insert") {
