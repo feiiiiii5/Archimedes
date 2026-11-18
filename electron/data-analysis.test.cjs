@@ -173,9 +173,15 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
   const os = require("node:os"), crypto = require("node:crypto"), packages = require("./project-results.cjs");
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-analysis-result-")));
   const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
-  const keys = ["window", "document", "HTMLElement", "Node", "XMLSerializer", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"];
+  const keys = ["window", "document", "HTMLElement", "Node", "XMLSerializer", "getComputedStyle", "ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"];
   const savedGlobals = Object.fromEntries(keys.map((key) => [key, global[key]]));
   Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, XMLSerializer: dom.window.XMLSerializer, getComputedStyle: dom.window.getComputedStyle, IS_REACT_ACT_ENVIRONMENT: true });
+  let measurePlot;
+  global.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(target) { measurePlot = (width) => { Object.defineProperty(target, "clientWidth", { configurable: true, value: width }); this.callback(); }; }
+    disconnect() {}
+  };
   const React = require("react"), { createRoot } = require("react-dom/client"), icons = require("lucide-react");
   Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map((name) => [name, icons[name]])), useUISettings: () => ({ t: (key) => key }) });
   await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
@@ -199,6 +205,7 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
   const question = async (text) => React.act(async () => { const node = document.getElementById("analysis-question"); Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, text); node.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
   try {
     await render(); await question("Initial question");
+    await React.act(async () => { measurePlot(720); });
     await click("Save analysis to project");
     await question("Compare the complete observations");
     await React.act(async () => { releaseFirstSave(); await firstSave; });
@@ -209,6 +216,15 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
     await click("Save analysis to project");
     assert.equal(records.size, 1, "the next save updates the existing package");
     assert.equal(records.get(firstRecord.id).manifest.question, "Compare the complete observations");
+    const svgFromPlot = packages.readPackageFile(records.get(firstRecord.id), "plot.svg").content;
+    const visibleSvg = document.querySelector("#analysis-plot-panel svg");
+    await click("Data table");
+    await React.act(async () => { measurePlot(0); });
+    assert.equal(document.querySelector("#analysis-plot-panel svg"), visibleSvg, "the hidden chart retains the visible layout");
+    assert.equal(document.getElementById("analysis-plot-panel").hidden, true);
+    await click("Save analysis to project");
+    assert.equal(packages.readPackageFile(records.get(firstRecord.id), "plot.svg").content, svgFromPlot,
+      "saving in the data tab preserves the chart geometry and text sizing");
     const record = [...records.values()][0], source = record.files.find((file) => file.role === "source");
     assert.equal(fs.readFileSync(path.join(directory, source.path), "utf8"), scope.penguins, "save must keep the original complete bytes rather than the five-row prompt sample");
     assert.match(packages.readPackageFile(record, "plot.svg").content, /<svg/);
