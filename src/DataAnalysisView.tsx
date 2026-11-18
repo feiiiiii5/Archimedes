@@ -164,7 +164,14 @@ export default function DataAnalysisView({ ownerKey = "preview", owner, bridge, 
       }
       setOwnerStates((current) => {
         const previous = current[ownerKey] ?? emptyState;
-        return previous.inputId === inputId && (editVersions.current.get(ownerKey) ?? 0) === savedVersion ? { ...current, [ownerKey]: { ...previous, resultId: saved.id, threadId: saved.threadId, notice: t("Analysis snapshot saved to this project.") } } : current;
+        if (previous.inputId !== inputId || previous.dataset !== dataset || previous.resultId !== resultId) return current;
+        const matchesDraft = (editVersions.current.get(ownerKey) ?? 0) === savedVersion;
+        return { ...current, [ownerKey]: {
+          ...previous,
+          resultId: saved.id,
+          threadId: previous.threadId === threadId ? saved.threadId : previous.threadId,
+          notice: matchesDraft ? t("Analysis snapshot saved to this project.") : previous.notice,
+        } };
       });
       // The list request is routed through the active data directory. If the
       // user moved to another directory while saving, refreshing here would

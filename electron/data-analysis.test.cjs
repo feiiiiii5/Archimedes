@@ -181,8 +181,15 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
   await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
   scope.format = scope.formatAnalysisNumber; await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
   const records = new Map(), owner = { dataRoot: directory, projectId: "project-a", workspaceId: "workspace-a", executionRoot: directory };
+  let releaseFirstSave;
+  const firstSave = new Promise(resolve => { releaseFirstSave = resolve; });
   const bridge = {
-    saveProjectResult: async (input) => { const detail = packages.savePackage({ ...input, executionRoot: directory, id: input.id || crypto.randomUUID() }); records.set(detail.id, detail); return detail; },
+    saveProjectResult: async (input) => {
+      await firstSave;
+      const detail = packages.savePackage({ ...input, executionRoot: directory, id: input.id || crypto.randomUUID() });
+      records.set(detail.id, detail);
+      return detail;
+    },
     linkProjectResultThread: async (id, threadId, dataRoot) => { assert.equal(dataRoot, owner.dataRoot); const record = { ...records.get(id), threadId }; records.set(id, record); return packages.readPackage(record); },
     listProjectResults: async () => [...records.values()], getProjectResult: async (id) => packages.readPackage(records.get(id)), readProjectResultFile: async (id, name) => packages.readPackageFile(records.get(id), name),
   };
@@ -191,8 +198,17 @@ test("the actual analysis component saves full CSV plus SVG, reopens its configu
   const click = async (label) => React.act(async () => { const button = [...document.querySelectorAll("button")].find((item) => item.textContent === label); assert.ok(button, label); assert.equal(button.disabled, false); button.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
   const question = async (text) => React.act(async () => { const node = document.getElementById("analysis-question"); Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, text); node.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
   try {
-    await render(); await question("Compare the complete observations");
+    await render(); await question("Initial question");
     await click("Save analysis to project");
+    await question("Compare the complete observations");
+    await React.act(async () => { releaseFirstSave(); await firstSave; });
+    const firstRecord = [...records.values()][0];
+    assert.equal(firstRecord.manifest.question, "Initial question");
+    assert.equal(document.getElementById("analysis-question").value, "Compare the complete observations");
+    assert.doesNotMatch(document.body.textContent, /Analysis snapshot saved to this project/, "the newer question is still unsaved");
+    await click("Save analysis to project");
+    assert.equal(records.size, 1, "the next save updates the existing package");
+    assert.equal(records.get(firstRecord.id).manifest.question, "Compare the complete observations");
     const record = [...records.values()][0], source = record.files.find((file) => file.role === "source");
     assert.equal(fs.readFileSync(path.join(directory, source.path), "utf8"), scope.penguins, "save must keep the original complete bytes rather than the five-row prompt sample");
     assert.match(packages.readPackageFile(record, "plot.svg").content, /<svg/);
