@@ -3098,7 +3098,10 @@ function App() {
     if (!owner.projectId || !owner.workspaceId || dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot || taskSelectionRef.current.projectId !== owner.projectId || taskSelectionRef.current.workspaceId !== owner.workspaceId) throw new Error(t("Select the presentation project workspace before starting."));
     if (activeRunRef.current || commandLockRef.current) throw new Error(t("Wait for the running task to finish before starting a presentation."));
     const originKey = taskDraftKey(taskSelectionRef.current);
-    const thread = await desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId, workspacePath: owner.executionRoot, mode: "free-chat", title: t("Paper presentation") });
+    const sourceThread = input.manuscript?.threadId ? await desktopBridge.getResearchThread(input.manuscript.threadId, owner.dataRoot) : null;
+    if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== originKey) throw new Error(t("The selected task changed. Return to the presentation and start again."));
+    const visibility = sourceThread?.visibility === "private" ? "private" : threadVisibility;
+    const thread = await desktopBridge.createResearchThread({ projectId: owner.projectId, workspaceId: owner.workspaceId, workspacePath: owner.executionRoot, mode: "free-chat", visibility, title: t("Paper presentation") });
     const target = threadTaskSelection(owner.dataRoot, thread, workspaces);
     if (target.projectId !== owner.projectId || target.workspaceId !== owner.workspaceId || target.executionRoot !== owner.executionRoot) throw new Error(t("The presentation session does not match its target workspace."));
     if (dataFolderLoadingRef.current || taskDraftKey(taskSelectionRef.current) !== originKey) throw new Error(t("The selected task changed. Return to the presentation and start again."));

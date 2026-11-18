@@ -5,16 +5,27 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
 def main() -> None:
     commands = {name: shutil.which(name) for name in ('node', 'npm', 'pdftoppm', 'soffice')}
+    npm = commands['npm']
+    if npm and sys.platform == 'win32' and not Path(npm).suffix:
+        # Node also ships an extensionless POSIX launcher alongside npm.cmd.
+        npm = commands['npm'] = shutil.which(npm + '.cmd')
     packages = {name: importlib.util.find_spec(name) is not None for name in ('requests', 'dotenv', 'PIL', 'markitdown')}
     node_modules = {}
-    if commands['npm'] and commands['node']:
-        result = subprocess.run(['npm', 'root', '-g'], capture_output=True, text=True)
-        root = Path(result.stdout.strip()) if result.returncode == 0 else None
+    if npm and commands['node']:
+        is_windows_shim = sys.platform == 'win32' and npm.lower().endswith(('.cmd', '.bat'))
+        command = f'"{npm}" root -g' if is_windows_shim else [npm, 'root', '-g']
+        try:
+            result = subprocess.run(command, shell=is_windows_shim, capture_output=True, text=True)
+            directory = result.stdout.strip() if result.returncode == 0 else ''
+        except OSError:
+            directory = ''
+        root = Path(directory) if directory else None
         for package in ('pptxgenjs', 'react', 'react-dom', 'react-icons', 'sharp'):
             node_modules[package] = bool(root and (root / package).exists())
     fontconfig = Path('/opt/homebrew/etc/fonts/fonts.conf')

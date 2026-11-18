@@ -20,7 +20,7 @@ async function fixture(t) {
   const dataRoot = path.join(root, "data"), oldRoot = path.join(root, "old-source"), newRoot = path.join(root, "new-target");
   for (const directory of [dataRoot, oldRoot, newRoot]) fs.mkdirSync(directory);
   const database = store.createWorkspaceStore(dataRoot), project = database.createResearchProject({ name: "Manuscript", workspacePath: oldRoot });
-  const workspace = database.defaultProjectWorkspace(project.id), original = database.createResearchThread({ projectId: project.id, workspaceId: workspace.id, mode: "free-chat", title: "Original research task" });
+  const workspace = database.defaultProjectWorkspace(project.id), original = database.createResearchThread({ projectId: project.id, workspaceId: workspace.id, mode: "free-chat", visibility: "private", title: "Original research task" });
   fs.mkdirSync(path.join(oldRoot, "paper")); fs.writeFileSync(path.join(oldRoot, "paper/main.tex"), "\\input{section}\n"); fs.writeFileSync(path.join(oldRoot, "paper/section.tex"), "Actual original manuscript\n");
   const build = await require("./latex-workspace.cjs").compileLatexDocument(oldRoot, "paper/main.tex", { executable: "tectonic", spawnImpl: (_command, args) => {
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => {};
@@ -32,7 +32,7 @@ async function fixture(t) {
   const origin = { dataRoot, projectId: project.id, workspaceId: workspace.id, threadId: original.id, workspace: oldRoot, mainPath: "paper/main.tex", selectedPath: "paper/section.tex", manifestPath: build.source_snapshot.manifest_path, sourceVersion: build.source_snapshot.requested_source.source_version, pdfPath: build.source_snapshot.pdf.path, pdfSha256: build.source_snapshot.pdf.sha256, buildId: build.source_snapshot.build_id };
   const drafts = new Map([[task.taskDraftKey(selection), { text: "ORIGINAL_UNSENT_PLAN", selectionStart: 0, selectionEnd: 0 }]]), contexts = new Map(), settings = new Map(), sent = [], shown = [];
   let threads = [];
-  const scope = { ...task, t: (value) => value, workspaces, dataFolderLoadingRef: { current: false }, taskSelectionRef: { current: selection }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 }, reasoningEffort: "medium", contextLength: "standard",
+  const scope = { ...task, t: (value) => value, workspaces, dataFolderLoadingRef: { current: false }, taskSelectionRef: { current: selection }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 }, reasoningEffort: "medium", contextLength: "standard", threadVisibility: "project",
     manuscriptChatsRef: { current: new Map() }, window: { localStorage: { getItem: (key) => settings.get(key) ?? null, setItem: (key, value) => settings.set(key, value) } },
     readComposerDraft: (key) => drafts.get(key) ?? null, writeComposerDraft: (key, value) => drafts.set(key, value), appendComposerText: (first, next) => first ? `${first}\n\n${next}` : next,
     queueComposerText: (key, text) => { const old = drafts.get(key)?.text || ""; drafts.set(key, { text: old ? `${old}\n\n${text}` : text }); },
@@ -46,8 +46,13 @@ async function fixture(t) {
   return { ...task, scope, database, project, workspace, root, dataRoot, oldRoot, newRoot, origin, selection, drafts, contexts, sent, shown };
 }
 
-test("actual App slides callback creates its target before copying the old-root build, preserving the original draft", async (t) => {
+test("actual App slides callback creates a private target before copying a private source build, preserving the original draft", async (t) => {
   const f = await fixture(t), start = await actualAppFunction("startSlidesFromPaper", f.scope);
+  const stage = f.scope.desktopBridge.stagePaperToSlidesPdf;
+  f.scope.desktopBridge.stagePaperToSlidesPdf = async (workspace, pdf, options) => {
+    assert.equal(f.database.getResearchThread(options.threadId).visibility, "private");
+    return stage(workspace, pdf, options);
+  };
   const target = f.newTaskSelection(f.dataRoot, { id: f.project.id, workspace_path: f.newRoot }, f.scope.workspaces, f.workspace.id);
   await start({ pdfPath: path.join(f.oldRoot, f.origin.pdfPath), backend: "codex", language: "English", length: "auto", instructions: "Keep the method", mineruToken: "", manuscript: f.origin }, target);
   assert.equal(f.sent.length, 1); assert.notEqual(f.sent[0].selection.threadId, f.selection.threadId);

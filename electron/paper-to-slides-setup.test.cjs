@@ -27,6 +27,47 @@ test("the actual existing prerequisite script reports local presence without exp
   assert.equal(typeof result.canStart, "boolean");
 });
 
+test("the inventory resolves a Windows npm command shim in a path with spaces", async t => {
+  const root = fixture(t), bin = path.join(root, "Node tools"), globalModules = path.join(root, "global modules");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(path.join(globalModules, "pptxgenjs"), { recursive: true });
+  const npm = path.join(bin, "npm");
+  fs.writeFileSync(npm, "#!/bin/sh\n");
+  fs.writeFileSync(npm + ".cmd", '@echo off\r\nif not "%*"=="root -g" exit /b 2\r\necho %ARCHIMEDES_SLIDES_TEST_NPM_ROOT%\r\n');
+  if (process.platform === "win32") {
+    const result = await checkPaperToSlidesSetup({ backend: "codex", hasTaskToken: true }, { python,
+      env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, ARCHIMEDES_SLIDES_TEST_NPM_ROOT: globalModules } });
+    assert.equal(result.checks.find(check => check.id === "node:pptxgenjs").status, "ready");
+    return;
+  }
+  // The normal macOS/Linux run checks the command passed to Windows. The
+  // Windows branch above runs the real shim when the suite has a Windows host.
+  const probe = path.join(__dirname, "assets/research-skills/paper2slides/codex/scripts/check_env.py");
+  const worker = `
+import importlib.util
+import os
+import runpy
+import shutil
+import subprocess
+import sys
+from types import SimpleNamespace
+
+script, npm, root = sys.argv[1:]
+sys.platform = "win32"
+shutil.which = lambda name: {"node": "node.exe", "npm": npm, npm + ".cmd": npm + ".cmd"}.get(name)
+importlib.util.find_spec = lambda name: None
+def run(command, **options):
+    assert command == '"' + npm + '.cmd" root -g'
+    assert options["shell"]
+    return SimpleNamespace(stdout=root, returncode=0)
+subprocess.run = run
+runpy.run_path(script, run_name="__main__")
+`;
+  const report = JSON.parse(execFileSync(python, ["-B", "-c", worker, probe, npm, globalModules], { encoding: "utf8" }));
+  assert.equal(report.commands.npm, npm + ".cmd");
+  assert.equal(report.global_node_modules.pptxgenjs, true);
+});
+
 test("missing Python and missing PATH tools produce explicit actionable checks rather than a ready result", async t => {
   const root = fixture(t);
   const noPython = await checkPaperToSlidesSetup({ backend: "claude", hasTaskToken: true }, { python: path.join(root, "absent-python"), env: { PATH: root } });
