@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("researchDesk", {
+  listManuscriptVersions: (input) => ipcRenderer.invoke("paper-writing:versions:list", input),
+  saveManuscriptVersion: (input) => ipcRenderer.invoke("paper-writing:versions:save", input),
+  compareManuscriptVersion: (input) => ipcRenderer.invoke("paper-writing:versions:compare", input),
+  restoreManuscriptVersion: (input) => ipcRenderer.invoke("paper-writing:versions:restore", input),
   platform: process.platform,
   getInitialWorkspace: () => ipcRenderer.invoke("window:initial-workspace"),
   getLocalIdentity: () => ipcRenderer.invoke("identity:get"),

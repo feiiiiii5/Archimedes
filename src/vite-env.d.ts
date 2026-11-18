@@ -93,6 +93,10 @@ interface ResearchDeskBridge {
     deleteArtifact: (id: string) => Promise<{ deleted: boolean }>;
     writeWorkspaceFile: (workspace: string, filePath: string, content: string) => Promise<WorkspaceFilePreview>;
     listLatexProjects: (workspace: string) => Promise<LatexProjectSummary[]>;
+    listManuscriptVersions?: import("./paper-writing-history").PaperWritingBridge["listManuscriptVersions"];
+    saveManuscriptVersion?: import("./paper-writing-history").PaperWritingBridge["saveManuscriptVersion"];
+    compareManuscriptVersion?: import("./paper-writing-history").PaperWritingBridge["compareManuscriptVersion"];
+    restoreManuscriptVersion?: import("./paper-writing-history").PaperWritingBridge["restoreManuscriptVersion"];
     createLatexProject: (workspace: string, directory?: string, template?: string) => Promise<WorkspaceFilePreview>;
     createLatexFile: (workspace: string, path: string) => Promise<WorkspaceFilePreview>;
     createLatexDirectory: (workspace: string, path: string) => Promise<LatexDirectoryResult>;

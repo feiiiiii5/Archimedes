@@ -129,9 +129,14 @@ function fileDigest(file) {
 }
 
 /** Version the manuscript directory, including sections, bibliography and assets. */
-function captureManuscriptSources(root, sourcePath) {
+function captureManuscriptSources(root, sourcePath, { allowMissing = false } = {}) {
   const workspace = workspacePath(root);
-  const source = workspacePath(workspace, sourcePath);
+  let source;
+  try { source = workspacePath(workspace, sourcePath); }
+  catch (error) {
+    if (!allowMissing || error.code !== "ENOENT") throw error;
+    source = workspacePath(workspace, sourcePath, { mustExist: false });
+  }
   const directory = path.dirname(source);
   const files = [], observations = [], untracked = [], directories = [];
   let bytes = 0;
@@ -151,7 +156,7 @@ function captureManuscriptSources(root, sourcePath) {
       observations.push([name, digest.observation]);
     }
   }
-  visit(directory);
+  if (!allowMissing || fs.existsSync(directory)) visit(workspacePath(workspace, relative(workspace, directory)));
   // A linked entry point can change documents without changing its target directory.
   // Keep the existing version format for ordinary manuscript paths.
   const resolvedMain = relative(workspace, source);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleDot, Cloud, FileCode2, FileImage, FilePlus2, FileText, Folder, FolderOpen, FolderPlus, FolderUp, LoaderCircle, MessageCircle, PanelLeftClose, PanelLeftOpen, Play, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleDot, Cloud, FileCode2, FileImage, FilePlus2, FileText, Folder, FolderOpen, FolderPlus, FolderUp, History, LoaderCircle, MessageCircle, PanelLeftClose, PanelLeftOpen, Play, RefreshCw, Search, X } from "lucide-react";
 import { useUISettings } from "./i18n";
 import SharedNoteEditor from "./SharedNoteEditor";
 import PaperTemplateLibrary, { paperTemplates } from "./PaperTemplateLibrary";
@@ -12,6 +12,8 @@ import { findSourceMatches, sourceMarksByLine, type SourceMark } from "./paper-s
 import { createWritingDocument, createWritingScope, editWritingDocument, saveWritingDocument, readWritingLocation, rememberWritingLocation, type WritingScope } from "./paper-writing-state";
 import "./paper-source-search.css";
 import "./paper-writing-workspace.css";
+import PaperWritingVersions from "./PaperWritingVersions";
+import type { ManuscriptVersion, ManuscriptVersionComparison, ManuscriptVersionScope } from "./paper-writing-history";
 
 
 const EDITABLE = new Set(["tex", "bib", "bst", "cls", "sty", "cfg"]);
@@ -19,6 +21,10 @@ const ASSETS = new Set([...EDITABLE, "pdf", "png", "jpg", "jpeg", "webp"]);
 const ext = (value: string) => value.split(".").at(-1)?.toLowerCase() || "";
 const editable = (value: string) => EDITABLE.has(ext(value));
 const projectRoot = (value: string) => value.split("/").slice(0, -1).join("/");
+function versionTarget({ id, dataRoot, projectId, workspaceId, executionRoot, threadId, mainPath }: ManuscriptVersion) {
+  return { id, dataRoot, projectId, workspaceId, executionRoot, threadId, mainPath };
+}
+
 
 const BROWSER_MIN_WIDTH = 160;
 const BROWSER_MAX_WIDTH = 360;
@@ -131,8 +137,8 @@ function HighlightLine({ text, problem, marks, activeMatch }: { text: string; pr
 
 export type PaperOpenRequest = { path: string; token: number } | null;
 
-export default function PaperWritingView({ bridge, workspace, projectId = null, threadId = null, openRequest, onRefresh, onAskAI, active = true }: {
-  bridge: ResearchDeskBridge; workspace: string; projectId?: string | null; threadId?: string | null; openRequest: PaperOpenRequest; onRefresh: () => Promise<void> | void; onAskAI: (path: string) => void; active?: boolean;
+export default function PaperWritingView({ bridge, workspace, projectId = null, openRequest, onRefresh, onAskAI, dataRoot, workspaceId, threadId = null, active = true }: {
+  bridge: ResearchDeskBridge; workspace: string; projectId?: string | null; openRequest: PaperOpenRequest; onRefresh: () => Promise<void> | void; onAskAI: (path: string) => void; dataRoot?: string; workspaceId?: string | null; threadId?: string | null; active?: boolean;
 }) {
   const { t } = useUISettings();
   const scopesRef = useRef(new Map<string, WritingScope>());
@@ -203,6 +209,10 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
   const createOpen = Boolean(createKind) && active;
   const [createName, setCreateName] = scoped("createName");
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const [versionOwner, setVersionOwner] = useState<{ owner: WritingScope; context: ManuscriptVersionScope } | null>(null);
+  const [versionsBusy, setVersionsBusy] = useState(false);
+  const versionsAvailable = Boolean(projectId && workspaceId && bridge.listManuscriptVersions);
+  const versionsDisabled = !versionsAvailable || versionsBusy || compileState === "compiling";
   const lineNumbersRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -303,6 +313,53 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
     }
   }, [bridge, loadDirectory, openFile, owner, refreshScope]);
 
+  function openVersions() {
+    if (!projectId || !workspaceId) return;
+    setChooserOpen(false);
+    setVersionOwner({ owner, context: { dataRoot, projectId, workspaceId, executionRoot: owner.workspace, threadId } });
+  }
+  async function withSavedManuscript<T>(operation: (selection: NonNullable<typeof versionOwner>, target?: WritingScope) => Promise<T>, version?: ManuscriptVersion) {
+    const selected = versionOwner;
+    if (!selected || versionsBusy) throw new Error(t("The manuscript is busy. Try again after saving."));
+    const target = version
+      ? scopesRef.current.get(JSON.stringify([version.executionRoot, version.projectId]))
+      : selected.owner;
+    if (target?.compileState === "compiling") throw new Error(t("Wait for the current compilation before changing key versions."));
+    setVersionsBusy(true);
+    try {
+      if (target) await Promise.all([...target.documents.values()].map(document => saveWritingDocument(document, bridge.writeWorkspaceFile, refreshScope)));
+      return await operation(selected, target);
+    } finally { setVersionsBusy(false); }
+  }
+  async function restoreVersion(comparison: ManuscriptVersionComparison) {
+    const restored = versionTarget(comparison.version);
+    await withSavedManuscript(async (selected, target) => {
+      if (!bridge.restoreManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
+      const receipt = await bridge.restoreManuscriptVersion({ ...restored, expectedSourceVersion: comparison.currentSourceVersion });
+      if (!target) return;
+      for (const name of [...receipt.restoredPaths, ...receipt.removedPaths]) target.documents.delete(name);
+      target.compileSequence++; target.compileResult = null; target.compileState = "idle"; target.compileLog = ""; target.coedit = false;
+      // Invalidate reads that began against the pre-restore directory tree.
+      for (const [directory, request] of target.directoryRequests) {
+        target.directoryRequests.set(directory, request + 1);
+      }
+      target.loading.clear();
+      if (target !== selected.owner || activeCompileContext.current.owner !== target) {
+        ++target.openSequence; ++target.activationSequence;
+        target.pendingOpen = 0; target.pendingActivation = 0;
+        if (receipt.removedPaths.includes(target.selectedPath)) target.selectedPath = restored.mainPath;
+        return;
+      }
+      if (restored.mainPath === target.mainPath) {
+        await loadDirectory(projectRoot(restored.mainPath) || ".", true);
+        await openFile(restored.mainPath);
+      } else {
+        await activateProject(restored.mainPath);
+      }
+      await onRefresh();
+    }, comparison.version);
+  }
+
   const refreshProjects = useCallback(async () => {
     const request = ++owner.projectListSequence;
     owner.projectsLoading = true;
@@ -341,7 +398,7 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
     void refreshProjects();
     // A fresh root listing lets the existing expanded nodes reload their children.
     if (owner.activeProject) void loadDirectory(owner.activeProject, true);
-    if (owner.selectedPath && !owner.pendingActivation && !owner.pendingOpen) void openFile(owner.selectedPath, true);
+    if (owner.selectedPath && !owner.pendingActivation && !owner.pendingOpen) void openFile(owner.selectedPath, owner.documents.has(owner.selectedPath));
   }, [active, loadDirectory, openFile, owner, refreshProjects]);
   useEffect(() => {
     if (!activeProject || !mainPath || !file?.path) return;
@@ -643,9 +700,25 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
   } as React.CSSProperties : undefined;
 
   return <div className="paper-writing-page" data-surface="writing">
+    {versionOwner && active && versionOwner.owner === owner && versionOwner.context.dataRoot === dataRoot &&
+      versionOwner.context.workspaceId === workspaceId && versionOwner.context.threadId === threadId &&
+      <PaperWritingVersions
+        executionRoot={versionOwner.context.executionRoot}
+        onClose={() => setVersionOwner(null)}
+        onList={async () => bridge.listManuscriptVersions ? bridge.listManuscriptVersions(versionOwner.context) : []}
+        onSave={file && mainPath ? name => withSavedManuscript(async selected => {
+          if (!bridge.saveManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
+          return bridge.saveManuscriptVersion({ ...selected.context, mainPath, name });
+        }) : undefined}
+        onCompare={version => withSavedManuscript(async () => {
+          if (!bridge.compareManuscriptVersion) throw new Error(t("Key versions are available in the desktop app."));
+          return bridge.compareManuscriptVersion(versionTarget(version));
+        }, version)}
+        onRestore={restoreVersion}
+      />}
     <div className={browserCollapsed && widePanes ? "paper-writing-workspace browser-collapsed" : "paper-writing-workspace"} ref={workspaceRef} style={paneStyle}>
       <aside className="paper-source-browser"><div className="paper-browser-title"><FolderOpen size={14} /><strong>{projectLabel}</strong>{activeProject && <div className="paper-browser-actions"><button onClick={() => { setCreateKind("file"); setCreateName("section.tex"); }} aria-label="New LaTeX file"><FilePlus2 size={14} /></button><button onClick={() => { setCreateKind("folder"); setCreateName("figures"); }} aria-label="New folder"><FolderPlus size={14} /></button></div>}</div><label className="paper-main-document">Main document<select value={mainPath} disabled={!activeProject} onChange={(event) => { setMainPath(event.target.value); void openFile(event.target.value); }}>{!activeProject && <option value="">Choose a project first</option>}{mainChoices.map((project) => <option key={project.path} value={project.path}>{project.path}</option>)}</select></label><div className="paper-tree-scroll">{activeProject ? tree.entries.map((entry) => <TreeNode key={entry.path} entry={entry} depth={0} selected={file?.path || ""} activeDirectory={activeDirectory} expanded={expanded} loading={loading} onToggle={toggleDirectory} onLoad={(path) => void loadDirectory(path)} onOpen={(path) => void openFile(path)} />) : <StateView compact className="paper-project-placeholder" icon={<FolderOpen size={20} />} title={t("No project selected")} description={t("Choose an existing manuscript or start a new one.")} />}</div><div className="paper-pane-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file browser" title="Drag to resize · double-click to reset" aria-valuemin={BROWSER_MIN_WIDTH} aria-valuemax={BROWSER_MAX_WIDTH} aria-valuenow={Math.round(browserWidth)} tabIndex={0} onPointerDown={(event) => beginPaneResize("browser", event)} onPointerMove={movePaneResize} onPointerUp={endPaneResize} onPointerCancel={endPaneResize} onDoubleClick={() => setBrowserWidth(BROWSER_DEFAULT_WIDTH)} onKeyDown={(event) => handlePaneResizeKey("browser", event)} /></aside>
-      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button><span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
+      <section className="latex-editor-pane" onKeyDown={handleSourceKey}><div className="paper-pane-toolbar"><button className="paper-browser-toggle" onClick={() => setBrowserCollapsed((collapsed) => !collapsed)} title={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-label={browserCollapsed ? "Show file browser" : "Hide file browser"} aria-pressed={!browserCollapsed}>{browserCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}</button><FileCode2 size={14} /><strong>{file?.name || "No source selected"}</strong><button className={searchOpen ? "paper-pane-action icon active" : "paper-pane-action icon"} disabled={!file} onClick={() => searchOpen ? closeSearch() : openSearch()} title={`${t("Search source")} (Ctrl/Cmd+F)`} aria-label={t("Search source")} aria-expanded={searchOpen} aria-controls={searchId}><Search size={14} /></button><span className={`paper-save-state ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" size={11} /> : saveState === "saved" ? <Check size={11} /> : <CircleDot size={11} />}{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Unsaved"}</span><span className="paper-continuity-tools"><button className="paper-pane-action icon" disabled={versionsDisabled} onClick={openVersions} title={t("Key versions")} aria-label={t("Key versions")}><History size={14} /></button></span><button className={coedit ? "paper-pane-action active" : "paper-pane-action"} disabled={!file || !projectId} onClick={() => { setCoedit((value) => !value); setSearchOpen(false); }} title="Co-edit this source with project members"><Cloud size={13} /><span>{coedit ? "Co-editing" : "Co-edit"}</span></button></div>
         {searchOpen && file && <div className="latex-source-search" id={searchId} role="search" aria-label={t("Search source")}>
           <Search size={14} aria-hidden="true" />
           <input ref={searchInputRef} type="text" value={searchQuery} onChange={(event) => changeSearch(event.target.value)} onKeyDown={(event) => {
@@ -664,7 +737,13 @@ export default function PaperWritingView({ bridge, workspace, projectId = null, 
         <div className="app-dialog-body paper-project-body">
           <Tabs label={t("Writing project options")} value={chooserTab} onChange={(value) => setChooserTab(value as "existing" | "new")}><Tab value="existing">{t("Existing manuscripts")}</Tab><Tab value="new">{t("New manuscript")}</Tab></Tabs>
           {chooserTab === "existing" ? <div className="paper-existing-projects">
-            <div className="paper-existing-project-heading"><h3>{t("Existing manuscripts")}</h3><button className="secondary-button" onClick={() => void refreshProjects()} disabled={owner.projectsLoading}><RefreshCw size={14} className={owner.projectsLoading ? "spin" : ""} />{t("Refresh")}</button></div>
+            <div className="paper-existing-project-heading">
+              <h3>{t("Existing manuscripts")}</h3>
+              <div className="paper-existing-project-actions">
+                {versionsAvailable && <button className="secondary-button" disabled={versionsDisabled} onClick={openVersions}><History size={14} />{t("Key versions")}</button>}
+                <button className="secondary-button" onClick={() => void refreshProjects()} disabled={owner.projectsLoading}><RefreshCw size={14} className={owner.projectsLoading ? "spin" : ""} />{t("Refresh")}</button>
+              </div>
+            </div>
             <p>{t("Choose the main document to continue editing. No compiler is needed to open a source file.")}</p>
             {owner.projectsLoading && <p role="status">{t("Looking for manuscripts…")}</p>}
             {!owner.projectsLoading && !availableProjects.length && <StateView compact icon={<FileText size={22} />} title={t("No manuscripts found")} description={t("Create a new manuscript or import an existing folder.")} action={<button className="primary-button" onClick={() => setChooserTab("new")}>{t("New manuscript")}</button>} />}
