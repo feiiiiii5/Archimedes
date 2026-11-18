@@ -378,7 +378,9 @@ export default function PaperWritingView({ bridge, workspace, projectId, openReq
       }
     } catch (nextError) {
       if (sequence !== owner.compileSequence) return;
-      setCompileState("error"); setError(nextError instanceof Error ? nextError.message : String(nextError));
+      setCompileState("error");
+      const message = nextError instanceof Error ? nextError.message : String(nextError);
+      setError(t(message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, "")));
     }
   }, [bridge, compileRequestPrefix, mainPath, owner, refreshScope, t]);
 
