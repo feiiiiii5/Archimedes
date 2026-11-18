@@ -797,6 +797,8 @@ interface LatexImportResult {
 }
 
 interface LatexCompileDiagnostic {
+  messageKey?: string;
+  detail?: string;
   help?: string;
   line: number | null;
   message: string;

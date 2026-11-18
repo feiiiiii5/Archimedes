@@ -5,9 +5,9 @@
 // lines instead of fighting over the end of one shared object.
 
 export const writing: Record<string, string> = {
-  "{count} files": "{count} 个文件",
   "1 file": "1 个文件",
   "2026 author kit from a pinned GitHub community mirror. Check current venue instructions before submission.": "通过固定版本的 GitHub 社区镜像获取的 2026 作者模板。投稿前请核对会议最新指南。",
+  "A manuscript directory changed without a corresponding file event.": "稿件目录发生了变化，但未收到对应的文件事件。",
   "ACM acmart v2.21 sigconf starter. Change class options to match the target venue.": "基于 ACM acmart v2.21 的 sigconf 起始模板。请按目标会议要求调整类选项。",
   "active": "进行中",
   "Add to chat": "加入对话",
@@ -27,6 +27,7 @@ export const writing: Record<string, string> = {
   "Command": "命令",
   "Community mirror": "社区镜像",
   "Community mirrors": "社区镜像",
+  "Compile again before using this PDF. Temporary files created during compilation may have affected the result: {detail}": "请重新编译后再使用此 PDF。编译期间创建的临时文件可能影响了结果：{detail}",
   "Compile the current manuscript before sending it to review.": "请先编译当前稿件，再发送至评审或幻灯片。",
   "Compiling and preparing dependencies": "正在准备依赖并编译",
   "Compiling paper": "正在编译论文",
@@ -81,10 +82,10 @@ export const writing: Record<string, string> = {
   "Official kits download on first use and are cached for offline reuse. A TeX distribution is required.": "官方模板首次使用时下载，缓存后可离线复用。编译需要安装 TeX 发行版。",
   "Official source": "官方来源",
   "Official templates": "官方模板",
-  "Open {path}": "打开 {path}",
   "Open a manuscript in this project folder. Source files stay in place.": "打开当前项目目录中的稿件，源文件保留在原处。",
   "Open an existing manuscript, or create a new paper from a template.": "打开已有稿件，或从模板新建论文。",
   "Open official source": "打开官方来源",
+  "Open {path}": "打开 {path}",
   "Preparing compiler": "正在准备编译引擎",
   "Preparing template…": "正在准备模板…",
   "Preprint": "预印本",
@@ -110,7 +111,9 @@ export const writing: Record<string, string> = {
   "The first build exceeded its preparation time limit. Downloaded dependencies are retained. Retry to continue using the cache; see the build log below.": "首次编译超过准备时限。已下载的依赖会保留，重试会继续使用缓存。请查看下方编译日志。",
   "The first build needs Internet access to download fonts and packages. Check the connection and click Recompile. Previously downloaded dependencies are cached locally.": "首次编译需要联网下载字体和宏包。请检查网络后点击重新编译；已下载的依赖会缓存在本地。",
   "The manuscript changed while preparing the handoff. Save and compile again.": "准备交接时稿件已更改，请重新保存并编译。",
+  "The manuscript directory could not be observed during compilation. The PDF is available for preview only. {detail}": "编译期间未能监测稿件目录。此 PDF 仅供预览。{detail}",
   "The manuscript directory exceeds the 10,000 file / 500 MiB source snapshot limit. Choose a dedicated paper folder.": "稿件目录超过源文件快照上限（10,000 个文件或 500 MiB）。请选择专门存放稿件的文件夹。",
+  "The manuscript directory watcher reported a change without a path.": "监测到稿件目录发生变化，但未收到文件路径。",
   "The manuscript sources changed during compilation. Compile again before using this PDF.": "编译期间稿件源文件已更改。请重新编译后再使用此 PDF。",
   "The manuscript sources changed while this build was queued. Compile again to use the latest inputs.": "编译排队期间稿件源文件已更改。请重新编译以使用最新内容。",
   "The sources changed while saving. Compile again to use the latest edits.": "保存期间源文件又有编辑，请重新编译以使用最新内容。",
@@ -124,4 +127,5 @@ export const writing: Record<string, string> = {
   "Visit the official author instructions to download and import the author kit.": "请前往官方作者指南下载模板，再导入文件夹。",
   "Waiting for compiler output…": "正在等待编译器输出…",
   "Writing project options": "稿件选项",
+  "{count} files": "{count} 个文件",
 };

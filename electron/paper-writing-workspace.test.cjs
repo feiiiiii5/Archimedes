@@ -484,8 +484,8 @@ test("preview addresses stay with the execution folder that produced the manuscr
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const body = main.slice(main.indexOf("function setWindowWorkspace("), main.indexOf("function workspaceStatePath("));
   const tokens = new Map();
-  const api = new Function("randomUUID", "windowWorkspaces", "windowPreviewTokens", "previewTokenWorkspaces",
-    body + "\nreturn {setWindowWorkspace, createPreviewToken};")(require("node:crypto").randomUUID, new Map(), new Map(), tokens);
+  const api = new Function("randomUUID", "windowWorkspaces", "windowPreviewTokens", "previewTokenWorkspaces", "windowApprovalClaims",
+    body + "\nreturn {setWindowWorkspace, createPreviewToken};")(require("node:crypto").randomUUID, new Map(), new Map(), tokens, new Map());
   api.setWindowWorkspace(1, "/data");
   const first = api.createPreviewToken(1, "/project-a");
   const second = api.createPreviewToken(1, "/project-b");
