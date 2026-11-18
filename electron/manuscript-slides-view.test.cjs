@@ -3,8 +3,9 @@ const fs = require("node:fs"), path = require("node:path");
 const { before, after, test } = require("node:test");
 const { JSDOM } = require("jsdom");
 let dom, React, createRoot, views;
+let locale = {};
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-const t = (key) => key;
+const t = (key) => locale[key] || key;
 before(async () => {
   dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
   Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
@@ -47,4 +48,29 @@ test("actual slides view keeps source and target distinct, checks setup before s
     await click(shown(), "Change");
     await click(shown(), "Create presentation"); assert.equal(started.at(-1).manuscript, undefined); assert.equal(started.at(-1).pdfPath, "/other/chosen.pdf");
   } finally { await React.act(async () => root.unmount()); }
+});
+
+test("setup renders missing and optional dependency diagnostics in Chinese", async () => {
+  const { paperSlides } = await import("../src/i18n/translations/paperSlides.ts");
+  const { paperReview } = await import("../src/i18n/translations/paperReview.ts");
+  locale = { ...paperSlides, ...paperReview };
+  const root = createRoot(document.getElementById("root"));
+  const bridge = {
+    getAgentBackendConfig: async () => ({ backend: "codex", binary: "codex", model: "" }),
+    checkAgentBackend: async () => ({ ready: true, message: "Local fixture", models: [] }),
+    checkPaperToSlidesSetup: async () => ({ canStart: false, checks: [
+      { id: "mineru-token", label: "MinerU token", status: "missing", detail: "Configure a MinerU token for this task before starting PDF parsing." },
+      { id: "fonts", label: "Fonts and visual output", status: "optional", detail: "Installed fonts, CJK rendering and visual output were not checked. CLI login is checked separately." },
+    ] }),
+  };
+  try {
+    await React.act(async () => root.render(React.createElement(views.PaperToSlidesView, { bridge, workspace: "/target", busy: false })));
+    await click(document, "检查任务环境");
+    assert.match(document.querySelector(".slides-setup").textContent, /请为本次任务配置 MinerU Token/);
+    assert.match(document.querySelector(".slides-setup details").textContent, /字体与视觉效果/);
+    assert.match(document.querySelector(".slides-setup details").textContent, /命令行登录状态会单独检查/);
+  } finally {
+    await React.act(async () => root.unmount());
+    locale = {};
+  }
 });

@@ -27,6 +27,26 @@ test("the actual existing prerequisite script reports local presence without exp
   assert.equal(typeof result.canStart, "boolean");
 });
 
+test("setup probes the documented Conda environment even when Electron uses a different Python", async () => {
+  const calls = [];
+  const execute = async (command, args, options) => {
+    calls.push({ command, args });
+    assert.match(options.stdin, /global_node_modules/);
+    return { exitCode: 0, stdout: JSON.stringify({
+      commands: { node: true, npm: true },
+      python_packages: { requests: true, dotenv: true, PIL: true },
+      global_node_modules: { pptxgenjs: true },
+    }) };
+  };
+  const input = { backend: "codex", hasTaskToken: true };
+  assert.equal((await checkPaperToSlidesSetup(input, { env: { CONDA_EXE: "configured-conda", CONDA_DEFAULT_ENV: "base" }, execute })).canStart, true);
+  assert.equal((await checkPaperToSlidesSetup(input, { env: { CONDA_DEFAULT_ENV: "paper2anything" }, execute })).canStart, true);
+  assert.deepEqual(calls, [
+    { command: "configured-conda", args: ["run", "-n", "paper2anything", "--no-capture-output", "python", "-B", "-"] },
+    { command: "python", args: ["-B", "-"] },
+  ]);
+});
+
 test("the inventory resolves a Windows npm command shim in a path with spaces", async t => {
   const root = fixture(t), bin = path.join(root, "Node tools"), globalModules = path.join(root, "global modules");
   fs.mkdirSync(bin);
@@ -71,7 +91,7 @@ runpy.run_path(script, run_name="__main__")
 test("missing Python and missing PATH tools produce explicit actionable checks rather than a ready result", async t => {
   const root = fixture(t);
   const noPython = await checkPaperToSlidesSetup({ backend: "claude", hasTaskToken: true }, { python: path.join(root, "absent-python"), env: { PATH: root } });
-  assert.equal(noPython.canStart, false); assert.match(noPython.checks[0].detail, /not verified/);
+  assert.equal(noPython.canStart, false); assert.match(noPython.checks[0].detail, /could not check the paper2anything Conda environment/);
   const noTools = await checkPaperToSlidesSetup({ backend: "claude", hasTaskToken: true }, { python, env: { PATH: root, PYTHONDONTWRITEBYTECODE: "1" } });
   assert.equal(noTools.checks.find(check => check.id === "command:node").status, "missing");
   assert.equal(noTools.checks.find(check => check.id === "command:npm").status, "missing");
