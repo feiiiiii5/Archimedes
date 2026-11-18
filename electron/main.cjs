@@ -888,8 +888,10 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("paper-to-slides:stage", (event, input = {}) => {
     const workspace = resolveWorkspace(input.workspace || windowWorkspaces.get(event.sender.id));
+    if (input.manuscript) return require("./paper-to-slides.cjs").stageManuscriptPdf(store.currentStore(), workspace, input.path, { manuscript: input.manuscript, threadId: input.threadId });
     return require("./paper-to-slides.cjs").stagePdf(workspace, input.path);
   });
+  ipcMain.handle("paper-to-slides:setup", (_event, input = {}) => require("./paper-to-slides-setup.cjs").checkPaperToSlidesSetup(input));
   ipcMain.handle("paper-review-app:choose-pdf", async (event) => {
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
     const options = {

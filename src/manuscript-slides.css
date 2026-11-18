@@ -1,0 +1,8 @@
+.manuscript-owner-workspace { min-height: 100%; }
+.manuscript-owner-workspace[hidden] { display: none; }
+.manuscript-source-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 0; color: var(--text-secondary); font-size: 12px; }
+.manuscript-source-receipt strong { color: var(--text-primary); }
+.slides-setup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; color: var(--text-secondary); }
+.slides-setup > p, .slides-setup > ul, .slides-setup > details { flex-basis: 100%; margin: 0; }
+.slides-setup li { margin: 5px 0; overflow-wrap: anywhere; }
+.manuscript-source-receipt > div { display: flex; flex-wrap: wrap; gap: 8px; }

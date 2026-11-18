@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { stagePdf } = require('./paper-to-slides.cjs');
@@ -28,6 +29,32 @@ test('Codex and Claude install distinct bundled skills, preserve user changes, a
   assert.throws(() => prepareResearchSkill({ workspace: root, backend: 'opencode', thread: { id: 'x', events: [] }, requested: 'paper-to-slides' }), /Codex or Claude/);
 });
 
+test('managed Codex installations can upgrade the inventory while retaining user files', t => {
+  const root = temp(t);
+  const launch = { workspace: root, backend: 'codex', thread: { id: 'codex', events: [] }, requested: 'paper-to-slides' };
+  const installed = path.dirname(prepareResearchSkill(launch).skillFile);
+  const resource = 'scripts/check_env.py';
+  const script = path.join(installed, resource);
+  const marker = path.join(installed, '.archimedes-skill.json');
+  const bundledScript = fs.readFileSync(script, 'utf8');
+  const currentMarker = fs.readFileSync(marker, 'utf8');
+  const priorScript = '# Previous managed inventory\n' + bundledScript;
+  const priorMarker = JSON.parse(currentMarker);
+  priorMarker.files[resource] = crypto.createHash('sha256').update(priorScript).digest('hex');
+  const localNote = path.join(installed, 'notes.md');
+  fs.writeFileSync(localNote, 'Workspace notes');
+  fs.writeFileSync(marker, JSON.stringify(priorMarker));
+  fs.writeFileSync(script, priorScript + '\n# User edit');
+  assert.throws(() => prepareResearchSkill(launch), /Skill resource was modified/);
+  assert.match(fs.readFileSync(script, 'utf8'), /# User edit/);
+
+  fs.writeFileSync(script, priorScript);
+  prepareResearchSkill(launch);
+  assert.equal(fs.readFileSync(script, 'utf8'), bundledScript);
+  assert.equal(fs.readFileSync(marker, 'utf8'), currentMarker);
+  assert.equal(fs.readFileSync(localNote, 'utf8'), 'Workspace notes');
+});
+
 test('page opens a PDF, switches example and sends the selected harness and settings', async () => {
   const { JSDOM } = require('jsdom'); const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
   const keys = ['window', 'document', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT'];
@@ -35,13 +62,13 @@ test('page opens a PDF, switches example and sends the selected harness and sett
   Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
   const React = require('react'), { createRoot } = require('react-dom/client'), icons = require('lucide-react');
   const scope = { React, ...React, ...icons, useUISettings: () => ({ t: key => key }), cover: 'cover.webp', motivation: 'motivation.webp', architecture: 'architecture.webp', collaboration: 'collaboration.webp', results: 'results.webp', examples: 'examples.webp', training: 'training.webp', evaluation: 'evaluation.webp' };
-  const source = fs.readFileSync(path.join(__dirname, '../src/PaperToSlidesView.tsx'), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/export default /g, '');
+  const source = fs.readFileSync(path.join(__dirname, '../src/PaperToSlidesView.tsx'), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/export default /g, '').replace(/^export /gm, '');
   const { transformWithOxc } = await import('vite'); const { code } = await transformWithOxc(source, 'PaperToSlidesView.tsx', { jsx: { runtime: 'classic' } });
   const { PaperToSlidesView } = new Function(...Object.keys(scope), `${code}\nreturn {PaperToSlidesView};`)(...Object.values(scope));
   const root = createRoot(document.getElementById('root')); let submitted;
   const click = node => React.act(async () => { assert.ok(node); node.click(); });
   try {
-    await React.act(async () => root.render(React.createElement(PaperToSlidesView, { bridge: { choosePaperReviewPdf: async () => '/papers/a.pdf' }, workspace: '/work', busy: false, onStart: async input => { submitted = input; } })));
+    await React.act(async () => root.render(React.createElement(PaperToSlidesView, { bridge: { choosePaperReviewPdf: async () => '/papers/a.pdf', getAgentBackendConfig: async () => ({ backend: 'codex' }), checkAgentBackend: async () => ({ ready: true, message: 'fixture' }), checkPaperToSlidesSetup: async () => ({ canStart: true, checks: [] }) }, workspace: '/work', busy: false, onStart: async input => { submitted = input; } })));
     assert.ok(document.querySelector('.slides-primary').disabled);
     await click(document.querySelector('[aria-label="Next slide"]')); assert.match(document.querySelector('.slides-gallery-frame img').src, /motivation/);
     await click(document.querySelector('.slides-secondary')); assert.match(document.querySelector('.slides-file-name').textContent, /a.pdf/);
