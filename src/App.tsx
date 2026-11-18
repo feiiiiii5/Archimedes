@@ -3069,19 +3069,26 @@ function App() {
 
   async function openManuscriptChat(source: ManuscriptChatSource, text = "", kind: "discussion" | "revision" = "discussion") {
     if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== source.dataRoot) throw new Error(t("Return to the manuscript data folder before continuing."));
-    const originKey = taskDraftKey(taskSelectionRef.current);
-    const cacheKey = `archimedes-manuscript-chat:${JSON.stringify([source.dataRoot, source.projectId, source.workspaceId, source.workspace, source.mainPath, kind])}`;
+    const origin = taskSelectionRef.current;
+    const originKey = taskDraftKey(origin);
+    const sourceThread = source.threadId ? await desktopBridge.getResearchThread(source.threadId, source.dataRoot) : null;
+    const visibility = threadVisibility === "private" || sourceThread?.visibility === "private" ? "private" : "project";
+    const privateScope = visibility === "private" ? [visibility, source.threadId || origin.threadId] : [];
+    const cacheKey = `archimedes-manuscript-chat:${JSON.stringify([source.dataRoot, source.projectId, source.workspaceId, source.workspace, source.mainPath, kind, ...privateScope])}`;
     let pending = manuscriptChatsRef.current.get(cacheKey);
     if (!pending) {
       pending = (async () => {
         let stored: string | null = null;
         try { stored = window.localStorage.getItem(cacheKey); } catch { /* Session persistence is optional. */ }
         if (stored) {
-          try { return await desktopBridge.getResearchThread(stored, source.dataRoot); }
+          try {
+            const thread = await desktopBridge.getResearchThread(stored, source.dataRoot);
+            if (thread.visibility === visibility) return thread;
+          }
           catch (reason) { if (!/not found|no longer exists/i.test(String(reason))) throw reason; }
         }
         if (taskSelectionRef.current.dataRoot !== source.dataRoot || dataFolderLoadingRef.current) throw new Error(t("Return to the manuscript data folder before continuing."));
-        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: source.threadId || undefined, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
+        return desktopBridge.createResearchThread({ projectId: source.projectId, workspaceId: source.workspaceId, workspacePath: source.workspace, basedOnThreadId: source.threadId || undefined, visibility, mode: "paper-generation", title: `${kind === "revision" ? t("Manuscript revision") : t("Manuscript discussion")}: ${source.mainPath}` });
       })();
       manuscriptChatsRef.current.set(cacheKey, pending);
     }

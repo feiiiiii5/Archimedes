@@ -19,6 +19,7 @@ In a completed review, **Add to revision draft** sends the selected finding,
 its quoted evidence/page, the reviewed source version and PDF hash to a
 separate manuscript revision discussion. It preserves the original research
 conversation's unsent draft and does not start an agent task automatically.
+Private source conversations keep their revision discussions private.
 Additional findings append to that manuscript's revision discussion. The user
 can compare the current sources with the reviewed version before requesting
 specific changes.

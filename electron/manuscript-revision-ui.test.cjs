@@ -19,7 +19,7 @@ async function fixture(t) {
   const dataRoot = path.join(root, "data"), oldRoot = path.join(root, "old-source"), newRoot = path.join(root, "new-target");
   for (const directory of [dataRoot, oldRoot, newRoot]) fs.mkdirSync(directory);
   const database = store.createWorkspaceStore(dataRoot), project = database.createResearchProject({ name: "Manuscript", workspacePath: oldRoot });
-  const workspace = database.defaultProjectWorkspace(project.id), original = database.createResearchThread({ projectId: project.id, workspaceId: workspace.id, mode: "free-chat", title: "Original research task" });
+  const workspace = database.defaultProjectWorkspace(project.id), original = database.createResearchThread({ projectId: project.id, workspaceId: workspace.id, mode: "free-chat", visibility: "private", title: "Original research task" });
   fs.mkdirSync(path.join(oldRoot, "paper")); fs.writeFileSync(path.join(oldRoot, "paper/main.tex"), "\\input{section}\n"); fs.writeFileSync(path.join(oldRoot, "paper/section.tex"), "Actual original manuscript\n");
   const build = await require("./latex-workspace.cjs").compileLatexDocument(oldRoot, "paper/main.tex", { executable: "tectonic", spawnImpl: (_command, args) => {
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => {};
@@ -31,7 +31,7 @@ async function fixture(t) {
   const origin = { dataRoot, projectId: project.id, workspaceId: workspace.id, threadId: original.id, workspace: oldRoot, mainPath: "paper/main.tex", selectedPath: "paper/section.tex", manifestPath: build.source_snapshot.manifest_path, sourceVersion: build.source_snapshot.requested_source.source_version, pdfPath: build.source_snapshot.pdf.path, pdfSha256: build.source_snapshot.pdf.sha256, buildId: build.source_snapshot.build_id };
   const drafts = new Map([[task.taskDraftKey(selection), { text: "ORIGINAL_UNSENT_PLAN", selectionStart: 0, selectionEnd: 0 }]]), contexts = new Map(), settings = new Map(), sent = [], shown = [];
   let threads = [];
-  const scope = { ...task, t: (value) => value, workspaces, dataFolderLoadingRef: { current: false }, taskSelectionRef: { current: selection }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 }, reasoningEffort: "medium", contextLength: "standard",
+  const scope = { ...task, t: (value) => value, workspaces, dataFolderLoadingRef: { current: false }, taskSelectionRef: { current: selection }, activeRunRef: { current: null }, commandLockRef: { current: false }, threadOpenRequestRef: { current: 0 }, reasoningEffort: "medium", contextLength: "standard", threadVisibility: "project",
     manuscriptChatsRef: { current: new Map() }, window: { localStorage: { getItem: (key) => settings.get(key) ?? null, setItem: (key, value) => settings.set(key, value) } },
     readComposerDraft: (key) => drafts.get(key) ?? null, writeComposerDraft: (key, value) => drafts.set(key, value), appendComposerText: (first, next) => first ? `${first}\n\n${next}` : next,
     queueComposerText: (key, text) => { const old = drafts.get(key)?.text || ""; drafts.set(key, { text: old ? `${old}\n\n${text}` : text }); },
@@ -45,13 +45,21 @@ async function fixture(t) {
   return { ...task, scope, database, project, workspace, root, dataRoot, oldRoot, newRoot, origin, selection, drafts, contexts, sent, shown };
 }
 
-test("actual App manuscript discussion/revision uses an empty based-on historical-root session and reuses it without replacing drafts", async (t) => {
+test("actual App revision keeps a private source separate from project-visible drafts and reuses the private session", async (t) => {
   const f = await fixture(t), open = await actualAppFunction("openManuscriptChat", f.scope);
+  const openShared = { ...f.origin, threadId: null };
+  await open(openShared, "PROJECT_REVISION_DRAFT", "revision");
+  const shared = f.scope.taskSelectionRef.current;
+  assert.equal(f.database.getResearchThread(shared.threadId).visibility, "project");
+  f.scope.taskSelectionRef.current = f.selection;
   f.scope.openManuscriptChat = open;
   const revise = await actualAppFunction("draftManuscriptRevision", f.scope);
   await revise({ id: "reviewed-run", manuscript: f.origin }, [{ text: "Selected feedback", page: 3, quote: "Original evidence", severity: "major" }]);
   const first = f.scope.taskSelectionRef.current, key = f.taskDraftKey(first), thread = f.database.getResearchThread(first.threadId);
   assert.equal(first.executionRoot, f.oldRoot); assert.notEqual(first.threadId, f.selection.threadId); assert.equal(thread.based_on_thread_id, f.selection.threadId); assert.equal(thread.turns.length, 0);
+  assert.equal(thread.visibility, "private");
+  assert.notEqual(first.threadId, shared.threadId);
+  assert.equal(f.drafts.get(f.taskDraftKey(shared)).text, "PROJECT_REVISION_DRAFT");
   f.drafts.set(key, { text: "USER_REVISION_NOTES\n" + f.drafts.get(key).text });
   await open(f.origin, "A second selected finding", "revision");
   assert.equal(f.scope.taskSelectionRef.current.threadId, first.threadId);
