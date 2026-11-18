@@ -68,3 +68,15 @@ The restored line belongs to the manuscript in the original folder. The
 current editor and its source retain their own contents.
 
 ![The comparison identifies the original folder and provides the restore action](historical-folder-comparison.png)
+
+## Restore after the manuscript changes
+
+Both production Electron builds opened the same saved version in Chinese at
+1,180 × 900 in Charcoal. A section changed on disk after comparison. The stale
+restore left the newer source in place. In the updated dialog the message asks
+for a fresh comparison in Chinese. Refreshing the comparison enabled a
+successful restore.
+
+| Before (`75b8772`) | After (`9aedeb7`) |
+| --- | --- |
+| ![English transport error in the Chinese dialog](stale-restore-zh-before.png) | ![Chinese guidance to compare again](stale-restore-zh-after.png) |
