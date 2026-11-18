@@ -73,4 +73,3 @@ test("opening a freshly imported conversation binds the same local context used 
     store.setLocalIdentity({ userId: "local-user", displayName: "Local user", deviceId: "local-device", deviceName: "This device" });
   }
 });
-

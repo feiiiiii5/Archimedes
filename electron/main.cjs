@@ -901,7 +901,9 @@ app.whenReady().then(async () => {
     return result.canceled ? "" : result.filePaths[0] || "";
   });
   ipcMain.handle("paper-review-app:create", async (event, input = {}) => {
-    const resolvedWorkspace = resolveWorkspace(input?.workspace || windowWorkspaces.get(event.sender.id));
+    const resolvedWorkspace = input.source?.kind === "library"
+      ? store.currentStore().workspace
+      : resolveWorkspace(input.workspace || windowWorkspaces.get(event.sender.id));
     const sender = event.sender;
     return paperReview.createRun(input, {
       workspace: resolvedWorkspace,
@@ -1908,8 +1910,9 @@ app.whenReady().then(async () => {
     const reasoningEffort = externalBackend ? undefined : normalizeReasoningEffort(config, input.reasoningEffort);
     const contextLength = externalBackend ? undefined : normalizeContextLength(config, input.contextLength);
     if (externalBackend && input.threadId && store.getResearchThread(input.threadId).kind === "paper") throw new Error("Paper chat uses the API harness in this version.");
-    return runWindowAgent({ sender: event.sender, native: Boolean(externalBackend), run: ({ externalSignal, emit }) => agent.runAgent({
-      dataStore: store.currentStore(),
+    const dataStore = store.currentStore();
+    const result = await runWindowAgent({ sender: event.sender, native: Boolean(externalBackend), run: ({ externalSignal, emit }) => agent.runAgent({
+      dataStore,
       externalBackend,
       researchSkill: input.researchSkill,
       mineruToken: input.mineruToken || undefined,
@@ -1930,6 +1933,11 @@ app.whenReady().then(async () => {
       browser: (args, signal, activeThreadId) => browserUse(event.sender, activeThreadId, args, signal),
       emit: (payload) => emit({ ...payload, ...(clientRunId ? { clientRunId } : {}) }),
     }) });
+    if (input.origin === "paper" && typeof input.paperId === "string") {
+      try { dataStore.setPaperChatThread(input.paperId, result.threadId, input.projectId); }
+      catch (error) { return { ...result, paperChatSaveError: error.message || String(error) }; }
+    }
+    return result;
   });
 
   ipcMain.handle("paper-review:run", async (event, input = {}) => {
@@ -2584,7 +2592,7 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow(startupWorkspace());
 });
 
-app.on("before-quit", () => {
+app.on("will-quit", () => {
   closeAllNativeClients();
   closeAllTerminals();
   collaborationServer?.close?.();
