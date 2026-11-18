@@ -12,3 +12,11 @@ The setup result in the "after" images comes from a deterministic bridge fixture
 | Charcoal | Form, setup checks and readiness | `charcoal-setup-before.png` | `charcoal-setup-after.png` |
 
 The "after" form shows the compiled source path, source version and PDF hash, the return-to-source action, the setup check controls and the fixture readiness state. The image harness lives outside the repository; no harness HTML/TSX is committed.
+
+## Chinese setup diagnostics
+
+`chinese-setup-before.png` and `chinese-setup-after.png` use the same
+1440×1000 Charcoal content viewport in Electron, with Chinese selected and
+the same fixture reporting a missing MinerU token and an optional font check.
+The comparison starts at `99b66c4`. The updated form shows both instructions
+in Chinese. The fixture supplies no token and does not start a presentation.
