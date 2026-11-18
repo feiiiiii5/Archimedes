@@ -2073,7 +2073,7 @@ function App() {
     if (dataFolderLoadingRef.current || taskSelectionRef.current.dataRoot !== owner.dataRoot) throw new Error(t("Return to the analysis data folder before attaching its source."));
     let pending = analysisHandoffsRef.current.get(sessionKey);
     if (!pending) {
-      const threadId = result ? result.threadId : analysisSessionsRef.current.get(sessionKey) || input.threadId;
+      const threadId = result?.threadId || analysisSessionsRef.current.get(sessionKey) || (result ? null : input.threadId);
       pending = (async () => {
         if (threadId) {
           try { return await desktopBridge.getResearchThread(threadId, owner.dataRoot); }

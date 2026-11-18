@@ -79,11 +79,7 @@ test('a deleted discussion can be replaced for a live draft and a saved analysis
   let creates = 0;
   const result = { id: 'saved-result', threadId: null, kind: 'analysis', projectId: 'a', workspaceId: 'ws-a', executionRoot: '/physical/a', fileState: 'ready' };
   const h = await callbacks(['queueComposerText', 'continueAnalysisInChat'], { desktopBridge: {
-    createResearchThread: async input => {
-      const id = `analysis-${++creates}`;
-      if (input.basedOnResultId) result.threadId = id;
-      return thread(id, input.projectId);
-    },
+    createResearchThread: async input => thread(`analysis-${++creates}`, input.projectId),
     getResearchThread: async id => {
       lookedUp.push(id);
       if (removed.has(id)) throw new Error("Error invoking remote method 'research-thread:get': Error: Research thread not found.");
@@ -98,13 +94,17 @@ test('a deleted discussion can be replaced for a live draft and a saved analysis
   assert.notEqual(original, replacement);
   assert.equal(await complete({ threadId: original }), replacement, 'the current in-memory association wins for an unsaved draft');
 
-  const savedDiscussion = await complete({ resultId: result.id, threadId: original });
+  const savedInput = { id: 'saved-csv', resultId: result.id };
+  const savedDiscussion = await complete({ ...savedInput, threadId: original });
+  assert.equal(await complete(savedInput), savedDiscussion, 'retrying before the association is saved reuses the still-existing discussion');
+  result.threadId = savedDiscussion;
   removed.add(savedDiscussion);
   result.threadId = null; // The store clears the saved association when the discussion is deleted.
-  const savedReplacement = await complete({ resultId: result.id, threadId: savedDiscussion });
+  const savedReplacement = await complete({ ...savedInput, threadId: savedDiscussion });
   assert.notEqual(savedReplacement, savedDiscussion);
-  assert.equal(result.threadId, savedReplacement);
-  assert.equal(await complete({ resultId: result.id }), savedReplacement);
-  assert.deepEqual(lookedUp, [original, replacement, savedReplacement], 'a cleared persisted ID beats the stale component and session-cache IDs');
+  result.threadId = savedReplacement;
+  assert.equal(await complete(savedInput), savedReplacement);
+  assert.deepEqual(lookedUp, [original, replacement, savedDiscussion, savedDiscussion, savedReplacement],
+    'a cleared saved result ignores the stale component ID and probes its cached discussion at most once');
 });
 
