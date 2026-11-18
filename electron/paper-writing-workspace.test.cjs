@@ -5,7 +5,8 @@ const path = require("node:path");
 const { test, before, after } = require("node:test");
 const { JSDOM } = require("jsdom");
 
-let dom, React, createRoot, Writing;
+let dom, React, createRoot, Writing, writingTranslations;
+let language = "en";
 const proactiveSignals = [];
 before(async () => {
   dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://localhost", pretendToBeVisual: true });
@@ -14,6 +15,8 @@ before(async () => {
     IS_REACT_ACT_ENVIRONMENT: true, ResizeObserver: class { observe() {} disconnect() {} }, getComputedStyle: dom.window.getComputedStyle });
   React = require("react"); ({ createRoot } = require("react-dom/client"));
   const { transformWithOxc } = await import("vite");
+  const { writingVersions } = await import("../src/i18n/translations/writingVersions.ts");
+  writingTranslations = writingVersions;
   const helpers = await import("../src/paper-writing-state.ts");
   const search = await import("../src/paper-source-search.ts");
   const source = fs.readFileSync(path.join(__dirname, "../src/PaperWritingView.tsx"), "utf8");
@@ -21,7 +24,10 @@ before(async () => {
   const names = source.match(/\{([^}]+)\} from "lucide-react"/)[1].split(",").map(name => name.trim());
   const scope = { React, ...React, ...helpers, ...search,
     ...Object.fromEntries(names.map(name => [name, icons[name]])),
-    useUISettings: () => ({ t: (value, values) => values ? value.replace(/\{(\w+)\}/g, (match, name) => values[name] ?? match) : value }),
+    useUISettings: () => ({ t: (key, values) => {
+      const template = language === "zh" ? writingTranslations[key] ?? key : key;
+      return values ? template.replace(/\{(\w+)\}/g, (match, name) => values[name] ?? match) : template;
+    } }),
     Dialog: props => props.open ? React.createElement(props.as || "div", { role: "dialog", onSubmit: props.onSubmit }, props.children) : null,
     StateView: props => React.createElement("div", null, props.title, props.description, props.action),
     PaperTemplateLibrary: () => null, paperTemplates: [{ id: "fake" }], SharedNoteEditor: () => null,
@@ -197,6 +203,63 @@ test("Writing discovers and restores a chatless milestone in its original folder
     await f.render(f.a, null); await settle();
     assert.equal(document.querySelector(".latex-editor-textarea").value, source("Project A original"));
   } finally { store.close(); }
+});
+
+test("Writing displays translated version failures without dropping the original path or OS detail", async t => {
+  const history = require("./paper-writing-history.cjs");
+  const workspaceId = "workspace-a";
+  const ipcFailure = (action, detail) => new Error(`Error invoking remote method 'paper-writing:versions:${action}': Error: ${detail}`);
+  let failListing = true;
+  let restoreDetail = "";
+  const f = await fixture(t, { workspaceId, bridge: {
+    listManuscriptVersions: async input => {
+      if (failListing) throw ipcFailure("list", "This manuscript belongs to another data workspace.");
+      return history.listProjectManuscriptVersions(input);
+    },
+    compareManuscriptVersion: async input => history.compareManuscriptVersion(input),
+    restoreManuscriptVersion: async input => {
+      try {
+        if (restoreDetail) throw new Error(restoreDetail);
+        return history.restoreManuscriptVersion(input);
+      } catch (error) { throw ipcFailure("restore", error.message); }
+    },
+  } });
+  const file = path.join(f.a, "paper/main.tex");
+  history.saveManuscriptVersion({ executionRoot: f.a, projectId: "a", workspaceId, mainPath: "paper/main.tex", name: "Saved evidence" });
+  fs.writeFileSync(file, source("Edited after saving the version"));
+  const alert = () => document.querySelector(".paper-continuity-error").textContent;
+  language = "zh";
+  try {
+    await f.render(f.a); await autoCompileOff();
+    await click("关键版本");
+    assert.equal(alert(), "此稿件属于另一个数据工作区。");
+    await click("关闭关键版本");
+    failListing = false;
+    await click("关键版本");
+    await React.act(async () => document.querySelector(".paper-version-row").click());
+    fs.writeFileSync(file, source("Edited after the comparison"));
+    await clickText("恢复此关键版本");
+    assert.equal(alert(), "比较后稿件已发生变化。请重新比较后再恢复。");
+    await clickText("刷新比较");
+
+    const blockedPath = path.join(f.a, "paper/数据. v2");
+    restoreDetail = `A directory blocking restoration contains unsaved material: ${blockedPath}`;
+    await clickText("恢复此关键版本");
+    assert.equal(alert(), `文件夹中有未保存的内容，无法恢复：${blockedPath}`);
+
+    const osFailure = `EACCES: permission denied, rename '${blockedPath}'`;
+    restoreDetail = `Could not finish restoring. Original files are available in ${f.a}/.archimedes/.restore-XYZabc. ${osFailure}`;
+    await clickText("恢复此关键版本");
+    assert.equal(alert(), `未能完成恢复。原始文件保存在 ${f.a}/.archimedes/.restore-XYZabc. ${osFailure}`);
+
+    restoreDetail = osFailure;
+    await clickText("恢复此关键版本");
+    assert.equal(alert(), osFailure);
+    language = "en";
+    await f.render(f.a);
+    await clickText("Restore this key version");
+    assert.equal(alert(), osFailure);
+  } finally { language = "en"; }
 });
 
 test("restoring a key version refreshes expanded source folders without reopening Writing", async t => {
