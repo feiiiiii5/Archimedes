@@ -219,7 +219,7 @@ test("paper chat uses the data root for library data and the execution root for 
   const app = source("App.tsx");
   const library = source("LibraryView.tsx");
   const workspace = source("LibraryWorkspace.tsx");
-  assert.match(app, /library: <LibraryView[^>]*workspace=\{workspace\}[^>]*executionWorkspace=\{executionWorkspace\}/);
+  assert.match(app, /library: <LibraryView[^>]*workspace=\{workspace\}[^>]*executionWorkspace=\{newPaperTask\.executionRoot\} workspaceId=\{newPaperTask\.workspaceId\}/);
   assert.match(library, /<LibraryWorkspace[\s\S]*?executionWorkspace=\{executionWorkspace\}/);
   assert.match(library, /<PaperReadingWorkbench \{\.\.\.readerProps\}[^>]*workspace=\{workspace\}/);
   assert.match(library, /function PaperReadingWorkbench\(\{[^}]*executionWorkspace/);

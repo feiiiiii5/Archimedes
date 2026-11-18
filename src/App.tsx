@@ -1556,6 +1556,7 @@ function App() {
   // and paper writing operate inside the session folder: session snapshot →
   // project folder → primary workspace.
   const executionWorkspace = taskSelection.executionRoot;
+  const newPaperTask = newTaskSelection(workspace, activeProject, projectWorkspaces, activeWorkspaceId);
   const viewingRunningTask = agentBusy && (runningOwnerKey === taskOwnerKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   const fileWorkspaceVersionRef = useRef(0);
@@ -3446,7 +3447,7 @@ function App() {
   // comes from the module registry, not from scattered conditions.
   const composerDraftKey = activeThreadId ?? `new:${activeProjectId ?? "none"}:${executionWorkspace}`;
   const sidebarModuleContent: Record<string, ReactNode> = {
-    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={executionWorkspace} workspaceId={activeWorkspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
+    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={newPaperTask.executionRoot} workspaceId={newPaperTask.workspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
     news: <NewsView bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
