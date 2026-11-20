@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const test = require("node:test");
 const store = require("./store.cjs");
 const agent = require("./agent.cjs");
-const { createWorkspaceIpc, isWorkspaceDataChannel } = require("./workspace-context.cjs");
+const { createWorkspaceIpc, isWorkspaceDataChannel, resolveResearchContext } = require("./workspace-context.cjs");
 const source = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 function extract(name) {
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
@@ -69,22 +69,39 @@ test("menu proposals and late reader previews preserve the accepted owner; recov
   const runEnd = source.indexOf('  ipcMain.handle("paper-review:run",', runStart);
   let finishReply, started;
   const pending = new Promise(resolve => { started = resolve; });
-  const paperThread = ownerA.createResearchThread({ prompt: "Read paper", mode: "free-chat", kind: "paper", workspacePath: a });
-  const fakeAgent = { runAgent: () => { started(); return new Promise(resolve => { finishReply = resolve; }); } };
+  const executionFolder = path.join(root, "paper-execution");
+  fs.mkdirSync(executionFolder);
+  const project = ownerA.createResearchProject({ name: "Paper chat project", workspacePath: executionFolder });
+  const projectWorkspace = ownerA.defaultProjectWorkspace(project.id);
+  const library = ownerA.listLibraries(project.id)[0];
+  const paper = ownerA.addPaper(library.id, { title: "Paper chat fixture", authors: ["Fixture Author"], year: 2026 });
+  const paperThread = ownerA.createResearchThread({
+    prompt: "Read paper", mode: "free-chat", kind: "paper",
+    projectId: project.id, workspaceId: projectWorkspace.id, workspacePath: executionFolder,
+  });
+  const fakeAgent = { runAgent: (input) => { started(input); return new Promise(resolve => { finishReply = resolve; }); } };
   new Function("scope", `with(scope) { ${source.slice(runStart, runEnd)} }`)({
-    ipcMain: ipc, store, resolveWorkspace: fs.realpathSync, sanitizeAgentContext: async () => [],
+    ipcMain: ipc, store, resolveWorkspace: fs.realpathSync, resolveResearchContext, sanitizeAgentContext: async () => [],
     agentBackendConfig: { get: () => ({ backend: "api" }) }, modelConfig: { getActiveModelConfig: () => ({}) },
     normalizeReasoningEffort: () => "medium", normalizeContextLength: () => "standard", agent: fakeAgent,
     runWindowAgent: ({ run }) => run({ emit() {} }),
   });
-  const reply = handlers.get("agent:run")(event, { prompt: "Read this", origin: "paper", paperId: "seed-react", workspace: a, projectId: paperThread.project_id });
-  await pending;
+  const reply = handlers.get("agent:run")(event, {
+    prompt: "Read this", origin: "paper", paperId: paper.id,
+    workspace: executionFolder, projectId: project.id, workspaceId: projectWorkspace.id,
+  });
+  const agentInput = await Promise.race([pending, reply]);
+  assert.equal(agentInput.dataStore, ownerA);
+  assert.equal(agentInput.workspace, executionFolder);
+  assert.equal(agentInput.workspaceId, projectWorkspace.id);
   helpers.setWindowWorkspace(1, b);
   finishReply({ threadId: paperThread.id, response: "A saved answer" });
   const saved = await reply;
   assert.equal(saved.paperChatSaveError, undefined);
-  assert.equal(ownerA.getPaperChatThread("seed-react", paperThread.project_id).id, paperThread.id);
-  assert.equal(ownerB.getPaperChatThread("seed-react"), null);
+  const associated = ownerA.getPaperChatThread(paper.id, project.id);
+  assert.equal(associated.id, paperThread.id);
+  assert.equal(associated.workspace_id, projectWorkspace.id);
+  assert.equal(ownerB.getPaperChatThread(paper.id), null);
   helpers.setWindowWorkspace(1, a);
   claim(event, sharedThread, true, a);
 

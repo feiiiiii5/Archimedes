@@ -106,7 +106,7 @@ test("composer drafts are persisted per thread and restored after a failed send"
   assert.match(app, /const COMPOSER_DRAFT_STORAGE_PREFIX = "archimedes-composer-draft:"/);
   assert.match(app, /function readComposerDraft\(key: string\)/);
   assert.match(app, /writeComposerDraft\(draftKey/);
-  assert.match(app, /const composerDraftKey = activeThreadId \?\?/);
+  assert.match(app, /const composerDraftKey = composerStorageKey\(taskSelection\)/);
   assert.match(app, /draftKey=\{composerDraftKey\}/);
   assert.match(app, /const sent = await onSubmit\(/);
   assert.match(app, /setPrompt\(\(current\) => current\.trim\(\) \? current : draft\)/);

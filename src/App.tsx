@@ -1,3 +1,4 @@
+import { composerStorageKey, newTaskSelection, taskDraftKey, threadTaskSelection, type TaskSelection } from "./task-selection";
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
@@ -277,8 +278,10 @@ function writeComposerDraft(key: string, draft: ComposerDraft | null) {
     const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}${key}`;
     if (!draft) window.localStorage.removeItem(storageKey);
     else window.localStorage.setItem(storageKey, JSON.stringify(draft));
+    return true;
   } catch {
     // Drafts are a convenience; storage failures must not block sending.
+    return false;
   }
 }
 
@@ -1390,15 +1393,19 @@ function App() {
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [workspaceOpenError, setWorkspaceOpenError] = useState("");
   const [workspaceOpening, setWorkspaceOpening] = useState(false);
-  const workspaceOpeningRef = useRef(false);
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [archivedProjects, setArchivedProjects] = useState<ResearchProject[]>([]);
   const [threads, setThreads] = useState<ResearchThread[]>([]);
   const [archivedThreads, setArchivedThreads] = useState<ResearchThread[]>([]);
   const [workspaces, setWorkspaces] = useState<ProjectWorkspace[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [taskSelection, setTaskSelection] = useState<TaskSelection>(() => newTaskSelection(DEFAULT_WORKSPACE, null, []));
+  const taskSelectionRef = useRef(taskSelection);
+  const dataFolderLoadingRef = useRef(false);
+  const { projectId: activeProjectId, threadId: activeThreadId, workspaceId: activeWorkspaceId } = taskSelection;
+  const [selectionError, setSelectionError] = useState("");
+  const activeRunRef = useRef<{ id: string; ownerKey: string; selection: TaskSelection; threadId: string | null; pendingAction?: PendingAction | null; finished?: boolean } | null>(null);
+  const [runningOwnerKey, setRunningOwnerKey] = useState<string | null>(null);
+  const taskOwnerKey = taskDraftKey(taskSelection);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceDialog, setWorkspaceDialog] = useState<
     | { mode: "create"; projectId: string; kind: ProjectWorkspaceKind }
@@ -1441,9 +1448,12 @@ function App() {
     return Math.max(240, Math.round(workbenchWidth * pane.size / 100));
   }, [workbenchLayout, workbenchWidth]);
   const [runningSession, setRunningSession] = useState<string | null>(null);
+  const runningCommandOwnerRef = useRef<string | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [chatViewNonce, setChatViewNonce] = useState(0);
+  const [adoptedChatView, setAdoptedChatView] = useState<{ threadKey: string; viewKey: string } | null>(null);
+  const chatViewKey = adoptedChatView?.threadKey === taskOwnerKey ? adoptedChatView.viewKey : `${taskOwnerKey}:${chatViewNonce}`;
   const [researchMode, setResearchMode] = useState<ResearchMode>("standard");
   const [acceptedStages, setAcceptedStages] = useState<ResearchStageId[]>(() => {
     const activeIndex = Math.max(0, researchStages.findIndex((stage) => stage.mode === researchMode));
@@ -1470,7 +1480,8 @@ function App() {
     : null;
   const [nativeStream, setNativeStream] = useState<{ threadId: string; events: ResearchEvent[] }>({ threadId: "", events: [] });
   const [nativeQuestions, setNativeQuestions] = useState<Array<{ threadId: string; question: NativeAgentQuestion }>>([]);
-  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId]);
+  const combinedTrajectoryEvents = useMemo(() => nativeStream.threadId === activeThreadId || (agentBusy && runningOwnerKey === taskOwnerKey && nativeStream.threadId === runningThreadId)
+    ? [...trajectoryEvents, ...nativeStream.events] : trajectoryEvents, [trajectoryEvents, nativeStream, activeThreadId, agentBusy, runningOwnerKey, taskOwnerKey, runningThreadId]);
   useEffect(() => {
     if (settingsOpen) return;
     let active = true;
@@ -1515,36 +1526,20 @@ function App() {
   const threadsRef = useRef<ResearchThread[]>([]);
   const refreshingThreadsRef = useRef(false);
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
-  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
+  const activeThread = threads.find((thread) => thread.id === activeThreadId && thread.project_id === activeProjectId) ?? null;
   const projectWorkspaces = useMemo(
     () => workspaces.filter((entry) => entry.project_id === activeProjectId),
     [activeProjectId, workspaces],
   );
-  const activeWorkspace = projectWorkspaces.find((entry) => entry.id === activeWorkspaceId)
-    ?? projectWorkspaces.find((entry) => entry.is_default)
-    ?? projectWorkspaces[0]
-    ?? null;
+  const activeWorkspace = projectWorkspaces.find((entry) => entry.id === activeWorkspaceId) ?? null;
   const workspaceSessions = useMemo(
-    () => activeWorkspace ? threads.filter((thread) => thread.workspace_id === activeWorkspace.id) : threads,
-    [activeWorkspace, threads],
+    () => threads.filter((thread) => thread.project_id === activeProjectId && (!activeWorkspace || thread.workspace_id === activeWorkspace.id)),
+    [activeProjectId, activeWorkspace, threads],
   );
   const archivedWorkspaceSessions = useMemo(
-    () => activeWorkspace ? archivedThreads.filter((thread) => thread.workspace_id === activeWorkspace.id) : archivedThreads,
-    [activeWorkspace, archivedThreads],
+    () => archivedThreads.filter((thread) => thread.project_id === activeProjectId && (!activeWorkspace || thread.workspace_id === activeWorkspace.id)),
+    [activeProjectId, activeWorkspace, archivedThreads],
   );
-  useEffect(() => {
-    if (!projectWorkspaces.length) {
-      setActiveWorkspaceId(null);
-      return;
-    }
-    if (activeThread?.workspace_id && projectWorkspaces.some((entry) => entry.id === activeThread.workspace_id)) {
-      if (activeWorkspaceId !== activeThread.workspace_id) setActiveWorkspaceId(activeThread.workspace_id);
-      return;
-    }
-    if (!activeWorkspaceId || !projectWorkspaces.some((entry) => entry.id === activeWorkspaceId)) {
-      setActiveWorkspaceId((projectWorkspaces.find((entry) => entry.is_default) ?? projectWorkspaces[0]).id);
-    }
-  }, [activeProjectId, activeThread?.workspace_id, activeWorkspaceId, projectWorkspaces]);
   useEffect(() => {
     if (activeThread?.visibility === "private" || activeThread?.visibility === "project") setThreadVisibility(activeThread.visibility);
     if (!activeThreadId) setCommentsOpen(false);
@@ -1552,11 +1547,12 @@ function App() {
   // Approvals are rendered inside the conversation view, so the open thread is
   // the only one whose prompts can actually be answered. Claiming it here lets
   // the agent veto a write instead of waiting for a prompt nobody can see.
+  const approvalThreadId = activeThreadId ?? (agentBusy && runningOwnerKey === taskOwnerKey ? runningThreadId : null);
   useEffect(() => {
-    if (!workspace || !activeThreadId || typeof desktopBridge?.claimApprovals !== "function") return;
-    void desktopBridge.claimApprovals(activeThreadId, true, workspace).catch(() => {});
-    return () => { void desktopBridge.claimApprovals(activeThreadId, false, workspace).catch(() => {}); };
-  }, [activeThreadId, workspace]);
+    if (!workspace || !approvalThreadId || typeof desktopBridge?.claimApprovals !== "function") return;
+    void desktopBridge.claimApprovals(approvalThreadId, true, workspace).catch(() => {});
+    return () => { void desktopBridge.claimApprovals(approvalThreadId, false, workspace).catch(() => {}); };
+  }, [approvalThreadId, workspace]);
   useEffect(() => {
     if (!activeProjectId || !authState?.user || typeof desktopBridge?.joinProjectPresence !== "function") {
       setPresenceMembers([]);
@@ -1575,7 +1571,9 @@ function App() {
   // Research data lives in the primary workspace. Agent tools, files, terminal,
   // and paper writing operate inside the session folder: session snapshot →
   // project folder → primary workspace.
-  const executionWorkspace = activeThread?.workspace_path || activeWorkspace?.root || activeProject?.workspace_path || workspace;
+  const executionWorkspace = taskSelection.executionRoot;
+  const newPaperTask = newTaskSelection(workspace, activeProject, projectWorkspaces, activeWorkspaceId);
+  const viewingRunningTask = agentBusy && (runningOwnerKey === taskOwnerKey || Boolean(activeThreadId && activeThreadId === runningThreadId));
   const executionWorkspaceRef = useRef(executionWorkspace);
   const fileWorkspaceVersionRef = useRef(0);
   if (executionWorkspaceRef.current !== executionWorkspace) fileWorkspaceVersionRef.current += 1;
@@ -1913,6 +1911,29 @@ function App() {
     return () => { cancelled = true; };
   }, [activeThreadId, artifactsVersion, workbenchOpen, workbenchActiveTabs]);
 
+  function applyTaskSelection(next: TaskSelection) {
+    taskSelectionRef.current = next;
+    activeThreadIdRef.current = next.threadId;
+    setTaskSelection(next);
+    setSelectionError("");
+  }
+
+  function displayThread(thread: ResearchThreadDetail, dataRoot = workspace, spaces = workspaces) {
+    const next = threadTaskSelection(dataRoot, thread, spaces);
+    clearPendingAssistantDeltas();
+    applyTaskSelection(next);
+    setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
+    setBoundHarness(thread.harness ?? null);
+    setMessages(thread.messages.length ? thread.messages : initialMessages);
+    setTrajectoryEvents(thread.events ?? []);
+    setEvents([]);
+    setResearchMode(thread.mode === "experiment-setup" ? thread.mode : chatModeFromThread(thread.mode, thread.events));
+    setChangeSets(thread.changeSets ?? []);
+    const tasks = thread.turns.map((turn) => turn.task_id).filter(Boolean);
+    const runningAction = activeRunRef.current?.threadId === thread.id ? activeRunRef.current.pendingAction : null;
+    setPendingAction((current) => runningAction ?? (current && tasks.includes(current.task_id) ? current : null));
+  }
+
   async function saveJourneySettings(patch: Partial<JourneySettings>) {
     const optimistic = normalizeJourneySettings({ ...journeySettings, ...patch });
     setJourneySettings(optimistic);
@@ -2179,7 +2200,7 @@ function App() {
     const unsubscribe = desktopBridge.onTerminalData(({ sessionId, data }) => {
       if (sessionId === runningSession && (data.includes("[process exited") || data.includes("[process stopped]"))) {
         setRunningSession(null);
-        setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "The approved command finished and its output was recorded in the workspace history." }]);
+        if (runningCommandOwnerRef.current === taskDraftKey(taskSelectionRef.current)) setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "The approved command finished and its output was recorded in the workspace history." }]);
       }
     });
     return unsubscribe;
@@ -2198,32 +2219,6 @@ function App() {
           return next;
         });
       }
-      if (event.threadId && !isGraphEvent) {
-        setRunningThreadId(event.threadId);
-        if (!activeThreadIdRef.current) {
-          activeThreadIdRef.current = event.threadId;
-          setActiveThreadId(event.threadId);
-        }
-        // A new chat exists in the database before its first turn finishes.
-        // Pull one snapshot so its Work row can show the live Running state.
-        if (!threadsRef.current.some((thread) => thread.id === event.threadId) && !refreshingThreadsRef.current) {
-          refreshingThreadsRef.current = true;
-          void desktopBridge.getResearchSnapshot?.().then((snapshot) => {
-            setProjects(snapshot.projects);
-            setArchivedProjects(snapshot.archivedProjects ?? []);
-            setThreads(snapshot.threads);
-            setArchivedThreads(snapshot.archivedThreads ?? []);
-            setWorkspaces(snapshot.workspaces ?? []);
-            const runningThread = snapshot.threads.find((thread) => thread.id === event.threadId);
-            if (runningThread && activeThreadIdRef.current === runningThread.id) setBoundHarness(runningThread.harness ?? null);
-            if (runningThread?.workspace_path) void desktopBridge.watchWorkspace?.(runningThread.workspace_path).catch(() => undefined);
-          }).catch(() => undefined).finally(() => {
-            refreshingThreadsRef.current = false;
-          });
-        }
-      }
-      if (event.type === "artifact") setArtifactsVersion((current) => current + 1);
-      if (event.experimentRun) setGraphVersion((current) => current + 1);
       if (event.type === "graph_update") {
         setGraphVersion((current) => current + 1);
         if (event.graph) setGraphUpdate(event.graph);
@@ -2234,18 +2229,55 @@ function App() {
           return;
         }
       }
+      const run = activeRunRef.current;
+      if (!run || run.finished || (event.clientRunId && event.clientRunId !== run.id) || (run.threadId && event.threadId && event.threadId !== run.threadId)) return;
+      if (event.threadId && !isGraphEvent) {
+        run.threadId = event.threadId;
+        setRunningThreadId(event.threadId);
+        // A new chat exists in the database before its first turn finishes.
+        // Pull one snapshot so its Work row can show the live Running state.
+        if (!threadsRef.current.some((thread) => thread.id === event.threadId) && !refreshingThreadsRef.current) {
+          refreshingThreadsRef.current = true;
+          void desktopBridge.getResearchSnapshot?.().then((snapshot) => {
+            if (run.finished || activeRunRef.current?.id !== run.id || taskSelectionRef.current.dataRoot !== run.selection.dataRoot) return;
+            setProjects(snapshot.projects);
+            setArchivedProjects(snapshot.archivedProjects ?? []);
+            setThreads(snapshot.threads);
+            setArchivedThreads(snapshot.archivedThreads ?? []);
+            setWorkspaces(snapshot.workspaces ?? []);
+            const runningThread = snapshot.threads.find((thread) => thread.id === event.threadId);
+            if (runningThread && activeThreadIdRef.current === runningThread.id) setBoundHarness(runningThread.harness ?? null);
+          }).catch(() => undefined).finally(() => {
+            refreshingThreadsRef.current = false;
+          });
+        }
+      }
+      if (event.type === "artifact") setArtifactsVersion((current) => current + 1);
+      if (event.type === "approval" && event.action) {
+        run.pendingAction = { ...event.action, source: "agent" };
+        if (event.threadId) setThreads((current) => current.map((thread) => thread.id === event.threadId ? { ...thread, pending_actions: (thread.pending_actions ?? 0) + 1 } : thread));
+      }
+      if (event.type === "complete" || event.type === "failed" || event.type === "interrupted") run.pendingAction = null;
+      if (event.type.startsWith("native_")) {
+        if (event.type === "native_question" || event.type === "native_question_resolved") setNativeQuestions((current) => updateNativeQuestions(current, event));
+        else if (event.type === "native_approval_resolved" && event.action) {
+          if (run.pendingAction?.id === event.action.id) run.pendingAction = null;
+        } else if (event.threadId) setNativeStream((current) => ({ threadId: event.threadId!, events: mergeNativeEvent(current.threadId === event.threadId ? current.events : [], event) }));
+      }
+      const viewingRun = taskSelectionRef.current.dataRoot === run.selection.dataRoot
+        && (taskDraftKey(taskSelectionRef.current) === run.ownerKey || Boolean(taskSelectionRef.current.threadId && taskSelectionRef.current.threadId === run.threadId));
+      if (!viewingRun) return;
+      if (event.experimentRun) setGraphVersion((current) => current + 1);
+
       if (event.type === "workspace_change" && event.changeSet) {
-        if (!event.threadId || activeThreadIdRef.current === event.threadId) setChangeSets((current) => upsertChangeSet(current, event.changeSet!));
+        setChangeSets((current) => upsertChangeSet(current, event.changeSet!));
         return;
       }
       if (event.type.startsWith("native_")) {
-        if (event.type === "native_question" || event.type === "native_question_resolved") setNativeQuestions((current) => updateNativeQuestions(current, event));
-        else if (event.type === "native_approval_resolved" && event.action) setPendingAction((current) => current?.id === event.action!.id ? null : current);
-        else if (event.threadId) setNativeStream((current) => ({ threadId: event.threadId!, events: mergeNativeEvent(current.threadId === event.threadId ? current.events : [], event) }));
+        if (event.type === "native_approval_resolved" && event.action) setPendingAction((current) => current?.id === event.action!.id ? null : current);
         return;
       }
       if (event.type === "assistant_delta" && event.turnId && event.delta) {
-        if (event.threadId && activeThreadIdRef.current !== event.threadId) return;
         queueAssistantDelta(event);
         return;
       }
@@ -2253,11 +2285,10 @@ function App() {
         flushAssistantDeltas();
         setInterrupting(false);
         setNativeQuestions((current) => current.filter((item) => Boolean(event.threadId) && item.threadId !== event.threadId));
-        setPendingAction((current) => current && (!event.threadId || activeThreadIdRef.current === event.threadId) ? null : current);
+        setPendingAction(null);
       }
-      if (event.type === "approval" && event.action && (!event.threadId || activeThreadIdRef.current === event.threadId)) {
+      if (event.type === "approval" && event.action) {
         setPendingAction({ ...event.action, source: "agent" });
-        if (event.threadId) setThreads((current) => current.map((thread) => thread.id === event.threadId ? { ...thread, pending_actions: (thread.pending_actions ?? 0) + 1 } : thread));
       }
       if (isGraphEvent && event.threadId && activeThreadIdRef.current !== event.threadId) return;
       const state = event.type === "complete" || event.type === "artifact" || event.type === "graph_update" || event.toolCall?.status === "completed" ? "done" : event.type === "configuration" || event.type === "failed" || event.type === "incomplete" || event.type === "interrupted" || event.toolCall?.status === "failed" || event.toolCall?.status === "interrupted" ? "waiting" : "active";
@@ -2310,24 +2341,25 @@ function App() {
       unsubscribeNewChat();
       unsubscribeOpenFolder();
     };
-  }, [activeProjectId, agentBusy]);
+  }, [activeProjectId, agentBusy, projects, workspaces]);
 
   async function chooseWorkspace() {
-    if (agentBusy || sideBusy || commandLockRef.current || workspaceOpeningRef.current) return;
+    if (agentBusy || sideBusy || commandLockRef.current || dataFolderLoadingRef.current) return;
     const selected = await desktopBridge.chooseWorkspace();
     if (selected) await loadWorkspace(selected);
   }
 
   async function loadWorkspace(workspacePath: string) {
-    if (workspaceOpeningRef.current || agentBusy || sideBusy || commandLockRef.current) return;
+    if (agentBusy || activeRunRef.current || sideBusy || commandLockRef.current || dataFolderLoadingRef.current) return;
     if (hasDirtyFileEditorScopes(fileEditorScopesRef.current) && !(await confirm({ title: "Discard unsaved changes?", description: "Artifact changes that have not been saved will be lost.", confirmLabel: "Discard changes", destructive: true }))) return;
-    if (workspaceOpeningRef.current) return;
-    workspaceOpeningRef.current = true;
+    if (dataFolderLoadingRef.current || activeRunRef.current || commandLockRef.current) return;
     setWorkspaceOpening(true);
+    threadOpenRequestRef.current += 1;
+    dataFolderLoadingRef.current = true;
     try {
       await openDataWorkspace(workspacePath);
     } finally {
-      workspaceOpeningRef.current = false;
+      dataFolderLoadingRef.current = false;
       setWorkspaceOpening(false);
     }
   }
@@ -2342,52 +2374,58 @@ function App() {
     if (!snapshot) return;
     flushSync(() => setWorkspaceReady(false));
     const readErrors: string[] = [];
-    const nextTree = await desktopBridge.listWorkspaceFiles(snapshot.workspace).catch(error => {
+    const knownProjects = new Set((snapshot.projects ?? []).map(project => project.id));
+    const rememberedProject = readPreferredProject(snapshot.workspace);
+    let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
+    if (!restoreProjectId && snapshot.threads.length && typeof desktopBridge.listLibraryProjects === "function") {
+      const summary = await desktopBridge.listLibraryProjects().catch(() => []);
+      const recentHasPapers = summary.some(entry => entry.project_id === snapshot.threads[0].project_id && entry.paper_count > 0);
+      if (!recentHasPapers) restoreProjectId = summary.find(entry => entry.paper_count > 0 && knownProjects.has(entry.project_id))?.project_id ?? null;
+    }
+    const restoreThread = restoreProjectId
+      ? snapshot.threads.find(candidate => candidate.project_id === restoreProjectId) ?? null
+      : snapshot.threads[0] ?? null;
+    const spaces = snapshot.workspaces ?? [];
+    const nextProjectId = restoreProjectId ?? restoreThread?.project_id ?? snapshot.projects?.[0]?.id ?? null;
+    let next = newTaskSelection(snapshot.workspace, snapshot.projects.find(project => project.id === nextProjectId) ?? null, spaces);
+    let thread: ResearchThreadDetail | null = null;
+    if (restoreThread) {
+      try {
+        const restored = await desktopBridge.getResearchThread(restoreThread.id, snapshot.workspace);
+        next = threadTaskSelection(snapshot.workspace, restored, spaces);
+        thread = restored;
+      } catch (error) {
+        readErrors.push(`${t("Could not open this research chat.")} ${errorMessage(error)}`);
+      }
+    }
+    const nextTree = await desktopBridge.listWorkspaceFiles(next.executionRoot).catch(error => {
       readErrors.push(errorMessage(error));
       return { entries: [], count: 0, truncated: false };
     });
 
-    // Reopen the project the user was last looking at. Falling back to the most
-    // recent thread alone lands people in whichever project they last chatted
-    // in, which can be a project with no libraries at all.
-    const knownProjects = new Set((snapshot.projects ?? []).map((project) => project.id));
-    const rememberedProject = readPreferredProject(snapshot.workspace);
-    let restoreProjectId = rememberedProject && knownProjects.has(rememberedProject) ? rememberedProject : null;
-
-    // First launch after this change: if the most recent thread sits in a
-    // project with no papers, start in the project that actually holds them
-    // instead of opening an empty library.
-    if (!restoreProjectId && snapshot.threads.length && typeof desktopBridge.listLibraryProjects === "function") {
-      const recentProject = snapshot.threads[0].project_id;
-      const summary = await desktopBridge.listLibraryProjects().catch(() => []);
-      const recentHasPapers = summary.some((entry) => entry.project_id === recentProject && entry.paper_count > 0);
-      if (!recentHasPapers) {
-        const populated = summary.find((entry) => entry.paper_count > 0 && knownProjects.has(entry.project_id));
-        if (populated) restoreProjectId = populated.project_id;
-      }
-    }
-
-    const restoreThread = restoreProjectId
-      ? snapshot.threads.find((candidate) => candidate.project_id === restoreProjectId) ?? null
-      : snapshot.threads[0] ?? null;
-
-    const thread = restoreThread ? await desktopBridge.getResearchThread(restoreThread.id, snapshot.workspace).catch(error => {
-      readErrors.push(errorMessage(error));
-      return null;
-    }) : null;
     flushSync(() => {
       clearPendingAssistantDeltas();
       setSideThread(null);
+      setWorkspaceDialog(null);
+      setNewProjectOpen(false);
+      if (snapshot.workspace !== taskSelectionRef.current.dataRoot) {
+        setContextItems([]);
+        setComposerRequest(null);
+      }
       setWorkspace(snapshot.workspace);
       setProjects(snapshot.projects ?? []);
       setArchivedProjects(snapshot.archivedProjects ?? []);
       setThreads(snapshot.threads);
       setArchivedThreads(snapshot.archivedThreads ?? []);
-      setWorkspaces(snapshot.workspaces ?? []);
-      if (snapshot.workspace !== workspace) {
-        setContextItems([]);
-        setComposerRequest(null);
-      }
+      setWorkspaces(spaces);
+      applyTaskSelection(next);
+      setMessages(thread?.messages.length ? thread.messages : initialMessages);
+      setTrajectoryEvents(thread?.events ?? []);
+      setEvents([]);
+      setBoundHarness(thread?.harness ?? null);
+      setResearchMode(thread?.mode === "experiment-setup" ? thread.mode : thread ? chatModeFromThread(thread.mode, thread.events) : "standard");
+      setChangeSets(thread?.changeSets ?? []);
+      setPendingAction(null);
       setFileTree(nextTree);
       setLoadingDirectories(new Set());
       openFilesRef.current = [];
@@ -2396,20 +2434,6 @@ function App() {
       setSelectedFile(null);
       setFileError("");
       replaceFileEditorScopes({});
-      setMessages(thread?.messages.length ? thread.messages : initialMessages);
-      setTrajectoryEvents(thread?.events ?? []);
-      setEvents([]);
-      setActiveThreadId(thread?.id ?? null);
-      setBoundHarness(thread?.harness ?? null);
-      const nextProjectId = thread?.project_id ?? restoreProjectId ?? snapshot.projects?.[0]?.id ?? null;
-      setActiveProjectId(nextProjectId);
-      const nextWorkspace = (snapshot.workspaces ?? []).find((entry) => entry.project_id === nextProjectId && entry.is_default)
-        ?? (snapshot.workspaces ?? []).find((entry) => entry.project_id === nextProjectId);
-      setActiveWorkspaceId(thread?.workspace_id ?? nextWorkspace?.id ?? null);
-      if (thread) setResearchMode(thread.mode === "experiment-setup" ? "experiment-setup" : chatModeFromThread(thread.mode, thread.events));
-      setChangeSets(thread?.changeSets ?? []);
-      const action = snapshot.actions.find((candidate) => candidate.status === "pending");
-      setPendingAction(action ? { ...action, source: "agent" } : null);
       setWorkspaceOpenError(readErrors.join("\n"));
       setWorkspaceReady(true);
     });
@@ -2520,27 +2544,30 @@ function App() {
     }
   }
 
-  function startNewTask(projectId = activeProjectId, workspaceId = activeWorkspaceId) {
-    if (agentBusy || workspaceOpeningRef.current) return;
-    writeComposerDraft(`new:${projectId ?? "none"}:${executionWorkspace}`, null);
+  function openEmptyTask(projectId = activeProjectId, workspaceId = activeWorkspaceId, availableProjects = projects, availableWorkspaces = workspaces, dataRoot = workspace, resetDraft = false) {
+    if (dataFolderLoadingRef.current) return;
+    threadOpenRequestRef.current += 1;
+    const project = availableProjects.find((entry) => entry.id === projectId) ?? null;
+    const next = newTaskSelection(dataRoot, project, availableWorkspaces, workspaceId);
+    if (activeRunRef.current?.ownerKey === taskDraftKey(next)) return;
+    if (resetDraft) writeComposerDraft(composerStorageKey(next), null);
+    applyTaskSelection(next);
     setMainSection("chat");
     clearPendingAssistantDeltas();
-    setChatViewNonce((current) => current + 1);
-    if (projectId) setActiveProjectId(projectId);
-    const targetWorkspace = workspaces.find((entry) => entry.id === workspaceId && entry.project_id === projectId)
-      ?? workspaces.find((entry) => entry.project_id === projectId && entry.is_default)
-      ?? workspaces.find((entry) => entry.project_id === projectId);
-    setActiveWorkspaceId(targetWorkspace?.id ?? null);
-    threadOpenRequestRef.current += 1;
-    activeThreadIdRef.current = null;
-    setActiveThreadId(null);
     setBoundHarness(null);
     setThreadVisibility("project");
     setMessages(initialMessages);
     setTrajectoryEvents([]);
+    setEvents([]);
     setPendingAction(null);
     setContextItems([]);
     setChangeSets([]);
+    setChatViewNonce((current) => current + 1);
+  }
+
+  function startNewTask() {
+    const { projectId, workspaceId, dataRoot } = taskSelectionRef.current;
+    openEmptyTask(projectId, workspaceId, projects, workspaces, dataRoot, true);
   }
 
   async function runConversationCommand(command: ConversationCommand): Promise<ConversationCommandResult> {
@@ -2569,7 +2596,7 @@ function App() {
       if (command === "fork" || command === "side") {
         const copy = threadId
           ? await desktopBridge.forkResearchThread(threadId, workspace, command === "side")
-          : await desktopBridge.createResearchThread({ projectId: activeProjectId || undefined, workspacePath: executionWorkspace, mode: researchMode, visibility: threadVisibility, title: t("Side conversation") });
+          : await desktopBridge.createResearchThread({ projectId: activeProjectId || undefined, workspaceId: activeWorkspaceId || undefined, workspacePath: executionWorkspace, mode: researchMode, visibility: threadVisibility, title: t("Side conversation") });
         setThreads((current) => [copy, ...current.filter((item) => item.id !== copy.id)]);
         if (command === "side") { setSideThread(copy); setWorkbenchOpen(false); }
         else await openResearchThread(copy);
@@ -2601,41 +2628,40 @@ function App() {
     } finally { commandLockRef.current = false; }
   }
 
-  async function openResearchThread(threadSummary: ResearchThread) {
-    if (workspaceOpeningRef.current) return;
-    if (sideThread?.id === threadSummary.id) {
-      if (sideBusy) return;
-      setSideThread(null);
-    }
-    clearPendingAssistantDeltas();
-    setMainSection("chat");
-    activeThreadIdRef.current = threadSummary.id;
-    setActiveThreadId(threadSummary.id);
-    setBoundHarness(threadSummary.harness ?? null);
-    setActiveProjectId(threadSummary.project_id);
-    if (threadSummary.workspace_id) setActiveWorkspaceId(threadSummary.workspace_id);
-    void desktopBridge.markResearchThreadViewed?.(threadSummary.id).catch(() => undefined);
-    setThreads((current) => current.map((item) => item.id === threadSummary.id ? { ...item, unread_count: 0 } : item));
+  async function openResearchThread(threadSummary: ResearchThread, showChat = true) {
+    if (dataFolderLoadingRef.current) return false;
+    if (sideThread?.id === threadSummary.id && sideBusy) return false;
+    const dataRoot = taskSelectionRef.current.dataRoot;
     const requestId = ++threadOpenRequestRef.current;
     try {
-      const thread = await desktopBridge.getResearchThread(threadSummary.id, workspace);
-      if (requestId !== threadOpenRequestRef.current) return;
-      activeThreadIdRef.current = thread.id;
-      setActiveThreadId(thread.id);
-      setBoundHarness(thread.harness ?? null);
-      setActiveProjectId(thread.project_id);
-      if (thread.workspace_id) setActiveWorkspaceId(thread.workspace_id);
-      setMessages(thread.messages.length ? thread.messages : initialMessages);
-      setTrajectoryEvents(thread.events ?? []);
-      setEvents([]);
-      setResearchMode(thread.mode === "experiment-setup" ? "experiment-setup" : chatModeFromThread(thread.mode, thread.events));
-      setChangeSets(thread.changeSets ?? []);
-      const action = thread.turns.map((turn) => turn.task_id).filter(Boolean);
-      setPendingAction((current) => current && action.includes(current.task_id) ? current : null);
+      const thread = await desktopBridge.getResearchThread(threadSummary.id, dataRoot);
+      if (requestId !== threadOpenRequestRef.current || dataRoot !== taskSelectionRef.current.dataRoot) return false;
+      displayThread(thread, dataRoot);
+      if (sideThread?.id === thread.id) setSideThread(null);
+      if (showChat) setMainSection("chat");
+      void desktopBridge.markResearchThreadViewed?.(thread.id).catch(() => undefined);
+      setThreads((current) => current.map((item) => item.id === thread.id ? { ...item, unread_count: 0 } : item));
+      return true;
     } catch (error) {
-      if (requestId !== threadOpenRequestRef.current) return;
-      setMessages([{ id: crypto.randomUUID(), role: "assistant", text: `Could not open this research chat: ${String(error)}` }]);
-      setChangeSets([]);
+      if (requestId === threadOpenRequestRef.current) setSelectionError(`${t("Could not open this research chat.")} ${String(error)}`);
+      return false;
+    }
+  }
+
+  async function selectProject(projectId: string) {
+    if (dataFolderLoadingRef.current) return;
+    if (projectId === taskSelectionRef.current.projectId) {
+      threadOpenRequestRef.current += 1;
+      return;
+    }
+    const project = projects.find((entry) => entry.id === projectId);
+    if (!project) return;
+    const next = threads.find((thread) => thread.project_id === projectId);
+    if (next) await openResearchThread(next, false);
+    else {
+      const section = mainSection;
+      openEmptyTask(projectId);
+      setMainSection(section);
     }
   }
 
@@ -2663,7 +2689,7 @@ function App() {
       setNewProjectName("");
       setNewProjectError("");
       setNewProjectOpen(false);
-      startNewTask(project.id, projectSpaces.find((entry) => entry.is_default)?.id);
+      openEmptyTask(project.id, projectSpaces.find((entry) => entry.is_default)?.id, [project, ...projects], projectSpaces);
     } catch (error) {
       setNewProjectError(error instanceof Error ? error.message : String(error));
     }
@@ -2679,18 +2705,14 @@ function App() {
   }
 
   async function selectWorkspace(workspaceToOpen: ProjectWorkspace) {
-    if (workspaceToOpen.id === activeWorkspace?.id) return;
-    setActiveWorkspaceId(workspaceToOpen.id);
-    if (workspaceToOpen.project_id !== activeProjectId) setActiveProjectId(workspaceToOpen.project_id);
-    const next = threads.find((thread) => thread.workspace_id === workspaceToOpen.id);
-    if (next) await openResearchThread(next);
-    else {
-      startNewTask(workspaceToOpen.project_id, workspaceToOpen.id);
-      // The new workspace may not be in the state snapshot yet, so make the
-      // explicit choice win over startNewTask's default-workspace fallback.
-      setActiveWorkspaceId(workspaceToOpen.id);
-      setActiveProjectId(workspaceToOpen.project_id);
+    if (dataFolderLoadingRef.current) return;
+    if (workspaceToOpen.id === taskSelectionRef.current.workspaceId) {
+      threadOpenRequestRef.current += 1;
+      return;
     }
+    const next = threads.find((thread) => thread.workspace_id === workspaceToOpen.id && thread.project_id === workspaceToOpen.project_id);
+    if (next) await openResearchThread(next);
+    else openEmptyTask(workspaceToOpen.project_id, workspaceToOpen.id, projects, [...workspaces.filter((entry) => entry.id !== workspaceToOpen.id), workspaceToOpen]);
   }
 
   function openWorkspaceCreator(projectId: string, kind?: ProjectWorkspaceKind) {
@@ -2757,7 +2779,7 @@ function App() {
         const fallback = (snapshot.workspaces ?? []).find((entry) => entry.project_id === workspaceToDelete.project_id && entry.is_default);
         const next = snapshot.threads.find((thread) => thread.workspace_id === fallback?.id);
         if (next) await openResearchThread(next);
-        else startNewTask(workspaceToDelete.project_id, fallback?.id);
+        else openEmptyTask(workspaceToDelete.project_id, fallback?.id);
       }
     } catch (error) {
       setProjectFolderError(error instanceof Error ? error.message : String(error));
@@ -2815,6 +2837,12 @@ function App() {
       setWorkspaces((current) => current.map((entry) => entry.project_id === updated.id && entry.is_default
         ? { ...entry, root: updated.workspace_path || entry.root }
         : entry));
+      const selectedTask = taskSelectionRef.current;
+      const defaultSpace = workspaces.find(entry => entry.project_id === updated.id && entry.is_default);
+      if (selectedTask.dataRoot === workspace && selectedTask.projectId === updated.id && !selectedTask.threadId
+        && (!selectedTask.workspaceId || selectedTask.workspaceId === defaultSpace?.id)) {
+        applyTaskSelection({ ...selectedTask, executionRoot: updated.workspace_path || selectedTask.dataRoot });
+      }
       setProjectFolderError("");
     } catch (error) {
       setProjectFolderError(error instanceof Error ? error.message : String(error));
@@ -2839,7 +2867,7 @@ function App() {
     if (archived && activeThreadId === thread.id) {
       const next = snapshot.threads.find((candidate) => candidate.workspace_id === thread.workspace_id)
         ?? snapshot.threads.find((candidate) => candidate.project_id === thread.project_id);
-      if (next) await openResearchThread(next); else startNewTask(thread.project_id, thread.workspace_id);
+      if (next) await openResearchThread(next); else openEmptyTask(thread.project_id, thread.workspace_id);
     }
   }
 
@@ -2861,7 +2889,7 @@ function App() {
     if (activeThreadId === thread.id) {
       const next = snapshot.threads.find((candidate) => candidate.workspace_id === thread.workspace_id)
         ?? snapshot.threads.find((candidate) => candidate.project_id === thread.project_id);
-      if (next) await openResearchThread(next); else startNewTask(thread.project_id, thread.workspace_id);
+      if (next) await openResearchThread(next); else openEmptyTask(thread.project_id, thread.workspace_id);
     }
   }
 
@@ -2878,12 +2906,7 @@ function App() {
       const nextThread = snapshot.threads[0];
       if (nextThread) await openResearchThread(nextThread);
       else {
-        activeThreadIdRef.current = null;
-        setActiveThreadId(null);
-        setBoundHarness(null);
-        setActiveProjectId(snapshot.projects[0]?.id ?? null);
-        setMessages(initialMessages);
-        setChangeSets([]);
+        openEmptyTask(snapshot.projects[0]?.id ?? null, null, snapshot.projects, snapshot.workspaces ?? []);
       }
     }
   }
@@ -2902,12 +2925,7 @@ function App() {
       const nextThread = snapshot.threads[0];
       if (nextThread) await openResearchThread(nextThread);
       else {
-        activeThreadIdRef.current = null;
-        setActiveThreadId(null);
-        setBoundHarness(null);
-        setActiveProjectId(snapshot.projects[0]?.id ?? null);
-        setMessages(initialMessages);
-        setChangeSets([]);
+        openEmptyTask(snapshot.projects[0]?.id ?? null, null, snapshot.projects, snapshot.workspaces ?? []);
       }
     }
   }
@@ -2916,9 +2934,19 @@ function App() {
     const question = draft.trim();
     const submittedContext = submittedContextOverride ?? contextItems;
     const hasPastedImage = submittedContext.some((item) => item.type === "image");
-    if ((!question && !hasPastedImage) || agentBusy || commandLockRef.current || workspaceOpeningRef.current) return false;
+    if (dataFolderLoadingRef.current || (!question && !hasPastedImage)) return false;
+    if (activeRunRef.current || commandLockRef.current) {
+      setSelectionError(t("Wait for the running task to finish before sending in another session."));
+      return false;
+    }
     const requestPrompt = question || "Please analyze the attached image.";
-    const submittedThreadId = forceNew ? null : activeThreadIdRef.current;
+    const owner = taskSelectionRef.current;
+    const ownerKey = taskDraftKey(owner);
+    const submittedThreadId = forceNew ? null : owner.threadId;
+    const clientRunId = `research-chat:${crypto.randomUUID()}`;
+    activeRunRef.current = { id: clientRunId, ownerKey, selection: owner, threadId: submittedThreadId };
+    setRunningOwnerKey(ownerKey);
+    setSelectionError("");
 
     setResearchMode(requestedMode);
 
@@ -2933,7 +2961,9 @@ function App() {
     setEvents(selectedNativeBackend ? [] : [{ title: "Evidence synthesis", detail: "Reading workspace and knowledge context", state: "active" }]);
 
     try {
-      const result = await desktopBridge.runAgent({ prompt: requestPrompt, workspace: executionWorkspace, threadId: forceNew ? undefined : activeThreadId || undefined, projectId: activeProjectId || undefined, workspaceId: activeWorkspace?.id, visibility: threadVisibility, mode: requestedMode, researchSkill, mineruToken, reasoningEffort: requestedReasoningEffort, contextLength: requestedContextLength, contextItems: submittedContext, capabilities: { write: "ask", command: "ask" }, origin: "research", backend: backendOverride || selectedHarness });
+      const result = await desktopBridge.runAgent({ prompt: requestPrompt, workspace: owner.executionRoot, threadId: submittedThreadId || undefined, projectId: owner.projectId || undefined, workspaceId: owner.workspaceId || undefined, clientRunId, visibility: threadVisibility, mode: requestedMode, researchSkill, mineruToken, reasoningEffort: requestedReasoningEffort, contextLength: requestedContextLength, contextItems: submittedContext, capabilities: { write: "ask", command: "ask" }, origin: "research", backend: backendOverride || selectedHarness });
+      if (activeRunRef.current?.id === clientRunId) activeRunRef.current.finished = true;
+      const resultSelection = threadTaskSelection(owner.dataRoot, result.thread, workspaces);
       setThreads((current) => [result.thread, ...current.filter((thread) => thread.id !== result.threadId)]);
       setNativeStream((current) => current.threadId === result.threadId ? { threadId: "", events: [] } : current);
       setNativeQuestions((current) => current.filter((item) => item.threadId !== result.threadId));
@@ -2947,29 +2977,36 @@ function App() {
           } catch { /* Keep the draft so it can be recovered. */ }
         }
       }
-      const stillViewingSubmittedThread = activeThreadIdRef.current === result.threadId
-        || (submittedThreadId === null && activeThreadIdRef.current === null);
+      const stillViewingSubmittedThread = taskSelectionRef.current.dataRoot === owner.dataRoot
+        && (taskDraftKey(taskSelectionRef.current) === ownerKey || taskSelectionRef.current.threadId === result.threadId);
       if (stillViewingSubmittedThread) {
+        setContextItems((current) => current.filter((item) => !submittedContext.includes(item)));
         clearPendingAssistantDeltas();
         activeThreadIdRef.current = result.threadId;
         setMessages(result.thread.messages.length ? result.thread.messages : initialMessages);
         setTrajectoryEvents(result.thread.events ?? []);
         setEvents([]);
-        setActiveThreadId(result.threadId);
+        if (owner.threadId === null && taskSelectionRef.current.threadId === null) {
+          const previousDraftKey = composerStorageKey(owner);
+          const unsent = readComposerDraft(previousDraftKey);
+          if (unsent && writeComposerDraft(composerStorageKey(resultSelection), unsent)) writeComposerDraft(previousDraftKey, null);
+          // The saved thread still owns this composer's unsent draft and queued follow-ups.
+          setAdoptedChatView({ threadKey: taskDraftKey(resultSelection), viewKey: chatViewKey });
+        }
+        applyTaskSelection(resultSelection);
         setBoundHarness(result.thread.harness ?? backendOverride ?? selectedHarness);
-        setActiveProjectId(result.thread.project_id);
-        if (result.thread.workspace_id) setActiveWorkspaceId(result.thread.workspace_id);
         setChangeSets(result.thread.changeSets ?? []);
         setEvents((current) => current.map((event) => event.title === "Evidence synthesis" ? { ...event, detail: "Turn saved to this research session", state: "done" } : event));
         const proposedAction = result.actions.find((action) => action.status === "pending");
         if (proposedAction) setPendingAction({ ...proposedAction, source: "agent" });
       }
-      setContextItems((current) => current.filter((item) => !submittedContext.some((submitted) => submitted.id === item.id)));
       return true;
     } catch (error) {
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `Archimedes could not start this task: ${String(error)}` }]);
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Archimedes could not start this task.")} ${String(error)}`);
       return false;
     } finally {
+      if (activeRunRef.current?.id === clientRunId) activeRunRef.current = null;
+      setRunningOwnerKey(null);
       setAgentBusy(false);
       setRunningThreadId(null);
       setInterrupting(false);
@@ -2978,6 +3015,7 @@ function App() {
 
   async function interruptResearchTurn() {
     if (!runningThreadId || interrupting) return;
+    const ownerKey = activeRunRef.current?.ownerKey ?? taskOwnerKey;
     setInterrupting(true);
     setEvents((current) => [
       ...current.filter((event) => event.title !== "Cancelling task"),
@@ -2987,19 +3025,21 @@ function App() {
       await desktopBridge.interruptAgent(runningThreadId);
     } catch (error) {
       setInterrupting(false);
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `Archimedes could not interrupt this task: ${String(error)}` }]);
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Archimedes could not interrupt this task.")} ${String(error)}`);
     }
   }
 
-  async function runCommand(command: string, actionId?: string) {
+  async function runCommand(command: string, actionId?: string, owner: TaskSelection = taskSelectionRef.current) {
     const trimmedCommand = command.trim();
     if (!trimmedCommand || runningSession) return;
-    openWorkbench("terminal");
+    const ownerKey = taskDraftKey(owner);
+    if (taskDraftKey(taskSelectionRef.current) === ownerKey) openWorkbench("terminal");
     try {
-      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: executionWorkspace, actionId });
+      const { sessionId } = await desktopBridge.runTerminal({ command: trimmedCommand, cwd: owner.executionRoot, actionId });
+      runningCommandOwnerRef.current = ownerKey;
       setRunningSession(sessionId);
     } catch (error) {
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `The command could not start: ${String(error)}` }]);
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("The command could not start.")} ${String(error)}`);
     }
   }
 
@@ -3256,8 +3296,7 @@ function App() {
     await openFilePane(normalizedName);
   }
 
-  function clearThreadPendingAction() {
-    const threadId = activeThreadIdRef.current;
+  function clearThreadPendingAction(threadId = approvalThreadId) {
     if (!threadId) return;
     setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, pending_actions: Math.max(0, (thread.pending_actions ?? 0) - 1) } : thread));
   }
@@ -3265,18 +3304,22 @@ function App() {
   async function approvePendingAction() {
     const action = pendingAction;
     if (!action) return;
+    const owner = taskSelectionRef.current;
+    const ownerKey = taskDraftKey(owner);
+    const ownerThreadId = approvalThreadId;
+    const clear = () => {
+      if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
+      setPendingAction((current) => current?.id === action.id ? null : current);
+      clearThreadPendingAction(ownerThreadId);
+    };
     try {
       if (action.source === "agent") await desktopBridge.approveAgentAction(action.id);
-      setPendingAction(null);
-      clearThreadPendingAction();
-      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) {
-        await runCommand(action.payload.command, action.id);
-      } else if (action.kind === "write" && action.payload.path) {
-        await refreshWorkspaceFiles();
-      }
+      clear();
+      if (action.kind === "command" && action.payload.command && !action.payload.externalAgent && !action.payload.managedByAgent) await runCommand(action.payload.command, action.id, owner);
+      else if (action.kind === "write" && action.payload.path && taskDraftKey(taskSelectionRef.current) === ownerKey) await refreshWorkspaceFiles();
     } catch (error) {
-      if (String(error).includes("file changed while awaiting approval")) { setPendingAction(null); clearThreadPendingAction(); }
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `Could not approve this action: ${String(error)}` }]);
+      if (String(error).includes("file changed while awaiting approval")) clear();
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not approve this action.")} ${String(error)}`);
     }
   }
 
@@ -3289,9 +3332,16 @@ function App() {
   async function rejectPendingAction() {
     const action = pendingAction;
     if (!action) return;
-    if (action.source === "agent") await desktopBridge.rejectAgentAction(action.id);
-    setPendingAction(null);
-    clearThreadPendingAction();
+    const ownerKey = taskOwnerKey;
+    const ownerThreadId = approvalThreadId;
+    try {
+      if (action.source === "agent") await desktopBridge.rejectAgentAction(action.id);
+      if (activeRunRef.current?.pendingAction?.id === action.id) activeRunRef.current.pendingAction = null;
+      setPendingAction((current) => current?.id === action.id ? null : current);
+      clearThreadPendingAction(ownerThreadId);
+    } catch (error) {
+      if (taskDraftKey(taskSelectionRef.current) === ownerKey) setSelectionError(`${t("Could not reject this action.")} ${String(error)}`);
+    }
   }
 
   function openWelcomeWorkflow(action: ResearchWelcomeAction) {
@@ -3386,7 +3436,6 @@ function App() {
 
   const dirtyFilePaths = useMemo(() => new Set(Object.values(fileDrafts).filter(isDraftDirty).map((draft) => draft.path)), [fileDrafts]);
   const changesBadge = useMemo(() => changeSets.reduce((total, changeSet) => seenChangeSetIds.has(changeSet.id) ? total : total + changeSet.changes.length, 0), [changeSets, seenChangeSetIds]);
-  const composerDraftKey = activeThreadId ?? `new:${activeProjectId ?? "none"}:${executionWorkspace}`;
   const conversationScrollKey = activeThreadId ?? `new:${activeProjectId ?? "none"}:${activeWorkspace?.id ?? executionWorkspace}`;
   const sessionCommentsScope = useMemo<SessionCommentsScope | null>(() => activeThreadId && activeProjectId ? {
     bridge: desktopBridge, workspace, projectId: activeProjectId, sessionId: activeThreadId, shared: Boolean(activeProject?.cloud_project_id),
@@ -3474,9 +3523,10 @@ function App() {
   // once here and projected by the host loop in the render below. Activate /
   // mount gating (keepMounted · cacheClass · requiresWorkspace · open gate)
   // comes from the module registry, not from scattered conditions.
+  const composerDraftKey = composerStorageKey(taskSelection);
   const sidebarModuleContent: Record<string, ReactNode> = {
-    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => setActiveProjectId(id)} />,
-    daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => setActiveProjectId(id)} />,
+    library: <LibraryView key={workspace} bridge={desktopBridge} mode="library" active={mainSection === "library"} workspace={workspace} executionWorkspace={newPaperTask.executionRoot} workspaceId={newPaperTask.workspaceId} projectId={activeProjectId} libraryRefreshVersion={libraryRefreshVersion} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
+    daily: <LibraryView key={dailyStartMode} bridge={desktopBridge} mode="daily" active={mainSection === "daily"} initialDailyMode={dailyStartMode} workspace={workspace} projectId={activeProjectId} onLibraryImported={() => setLibraryRefreshVersion((version) => version + 1)} onInternalReviewThreadsDeleted={(threadIds) => setThreads((current) => current.filter((thread) => !threadIds.includes(thread.id)))} onReproduceOpened={(id) => { setReproduceId(id); setMainSection("reproduce"); }} onOpenProject={(id) => void selectProject(id)} />,
     "benchmark-radar": <BenchmarkRadarView />,
     news: <NewsView bridge={desktopBridge} projectId={activeProjectId} active={mainSection === "news"} onSendToChat={sendNoteToChat} />,
     "paper-review": <PaperReviewView bridge={desktopBridge} workspace={executionWorkspace} projectId={activeProjectId} active={mainSection === "paper-review"} />,
@@ -3487,7 +3537,7 @@ function App() {
     "data-analysis": <DataAnalysisView onAskAI={(text) => sendNoteToChat(text, "replace")} />,
     "paper-to-slides": <PaperToSlidesView bridge={desktopBridge} workspace={executionWorkspace} busy={agentBusy} onStart={async ({ pdfPath, backend, language, length, instructions, mineruToken }) => {
       const staged = await desktopBridge.stagePaperToSlidesPdf(executionWorkspace, pdfPath);
-      startNewTask();
+      openEmptyTask();
       const prompt = [`Create a paper presentation using the bundled paper2slides skill.`, `Input PDF: ${JSON.stringify(staged)}`, `Slide and speaker-note language: ${language}.`, `Length: ${length}.`, `Use relevant original figures and tables; check visual quality and factual accuracy. Save an editable PPTX and report the output path.`, instructions ? `Additional user instructions: ${instructions}` : ""].filter(Boolean).join("\n");
       await submitPrompt(prompt, "free-chat", reasoningEffort, contextLength, [], "paper-to-slides", backend, true, mineruToken || undefined);
     }} />,
@@ -3622,11 +3672,12 @@ function App() {
           </div>
         </header>
 
+        {selectionError && <div className="task-selection-error" role="alert">{selectionError}</div>}
         <div className="main-workspace" ref={mainWorkspaceRef}>
         <div className={mainSection === "chat" ? `main-view chat-main${sideThread ? " has-side-chat" : ""}` : "main-view knowledge-main"}>
           {mainSection === "chat" && (
             <ConversationView
-              key={activeThreadId ?? `new:${chatViewNonce}`}
+              key={chatViewKey}
               commentScope={sessionCommentsScope}
               addingComment={commentsOpen}
               commentsShowResolved={sessionTools.commentsShowResolved}
@@ -3643,18 +3694,18 @@ function App() {
                 const profile = current.profiles?.[target] || (current.backend === backend ? current : { binary: target, model: "", effort: "", permissionMode: target === "codex" ? "read-only" as const : "ask" as const });
                 const saved = await desktopBridge.saveAgentBackendConfig({ ...profile, backend });
                 setNativeBackend(saved);
-                if (boundHarness && backend !== boundHarness) startNewTask();
+                if (boundHarness && backend !== boundHarness) openEmptyTask();
               }}
-              nativeQuestions={agentBusy ? nativeQuestions.filter((item) => item.threadId === activeThreadId).map((item) => item.question) : []}
-              onNativeAnswer={(id, answers) => desktopBridge.answerNativeAgentQuestion(activeThreadId!, id, answers, workspace)}
-              onNativeSteer={(text) => desktopBridge.steerNativeAgent(activeThreadId!, text, workspace)}
+              nativeQuestions={agentBusy ? nativeQuestions.filter((item) => item.threadId === approvalThreadId).map((item) => item.question) : []}
+              onNativeAnswer={(id, answers) => desktopBridge.answerNativeAgentQuestion(approvalThreadId!, id, answers, workspace)}
+              onNativeSteer={(text) => desktopBridge.steerNativeAgent(approvalThreadId!, text, workspace)}
               workspace={executionWorkspace}
               projectId={activeProjectId}
               onOpenWorkspaceSettings={() => { setSettingsSection("workspace"); setSettingsOpen(true); }}
               onCommand={runConversationCommand}
               contextSummary={threads.find((thread) => thread.id === activeThreadId)?.context_summary}
               compactedThroughTurnId={threads.find((thread) => thread.id === activeThreadId)?.context_summary_through_turn_id}
-              agentBusy={agentBusy}
+              agentBusy={agentBusy && viewingRunningTask}
               interrupting={interrupting}
               pendingAction={pendingAction}
               changeSets={changeSets}
@@ -3678,7 +3729,7 @@ function App() {
               onApprove={() => void approvePendingAction()}
               onReject={() => void rejectPendingAction()}
               onOpenFile={openChangedFile}
-              showWelcome={activeThreadId === null && messages.length === 1 && messages[0]?.id === "welcome" && !agentBusy}
+              showWelcome={activeThreadId === null && messages.length === 1 && messages[0]?.id === "welcome" && !viewingRunningTask}
               onWelcomeAction={openWelcomeWorkflow}
               composerRequest={composerRequest}
               draftKey={composerDraftKey}
@@ -4254,8 +4305,8 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const [steering, setSteering] = useState(false);
   const reportedNativeUsage = useMemo(() => nativeUsage(trajectoryEvents), [trajectoryEvents]);
   const slashRunningRef = useRef(false);
-  const storedDraftRef = useRef<ComposerDraft | null>(readComposerDraft(draftKey));
-  const [prompt, setPrompt] = useState(storedDraftRef.current?.text ?? "");
+  const [storedDraft] = useState(() => readComposerDraft(draftKey));
+  const [prompt, setPrompt] = useState(storedDraft?.text ?? "");
   const [promptHistory, setPromptHistory] = useState<string[]>(readComposerHistory);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
@@ -4276,7 +4327,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   const rejectHistoryAction = useCallback(() => historyHandlersRef.current.onReject(), []);
   const openHistoryFile = useCallback((path: string) => historyHandlersRef.current.onOpenFile(path), []);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
-  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraftRef.current?.newChatMode ?? "standard");
+  const [newChatMode, setNewChatMode] = useState<NewChatMode>(storedDraft?.newChatMode ?? "standard");
   const welcomeVisible = showWelcome && !welcomeDismissed;
 
   useEffect(() => {
@@ -4288,27 +4339,17 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
   }, [composerRequest, onComposerRequestApplied]);
 
   useEffect(() => {
-    // A queued composer request wins over the stored draft on first mount:
-    // "Ask AI" from another module switches sections and sets both in the same
-    // commit, so restoring the empty draft here would erase the prompt.
-    if (composerRequest && appliedComposerRequestRef.current === composerRequest.id) return;
-    const stored = readComposerDraft(draftKey);
-    storedDraftRef.current = stored;
-    setNewChatMode(stored?.newChatMode ?? "standard");
-    setPrompt(stored?.text ?? "");
-    setPendingResearchSkill(null);
-    setCommandNotice("");
-    setHistoryIndex(-1);
-    if (!stored) return;
+    // A task switch remounts the composer. Adopting its first thread keeps the live draft.
+    if (!storedDraft || (composerRequest && appliedComposerRequestRef.current === composerRequest.id)) return;
     const frame = requestAnimationFrame(() => {
       const textarea = composerRef.current;
       if (!textarea) return;
-      const start = Math.min(stored.selectionStart, stored.text.length);
-      const end = Math.min(stored.selectionEnd, stored.text.length);
+      const start = Math.min(storedDraft.selectionStart, storedDraft.text.length);
+      const end = Math.min(storedDraft.selectionEnd, storedDraft.text.length);
       textarea.setSelectionRange(start, end);
     });
     return () => cancelAnimationFrame(frame);
-  }, [draftKey]);
+  }, [storedDraft]);
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -4669,7 +4710,7 @@ function ConversationView({ messages, events, trajectoryEvents, nativeBackend, h
     if (!sent) setPrompt((current) => current.trim() ? current : draft);
     requestAnimationFrame(() => {
       const textarea = composerRef.current;
-      if (!textarea) return;
+      if (!textarea || (sent && textarea.value)) return;
       textarea.focus();
       const end = textarea.value.length;
       textarea.setSelectionRange(end, end);

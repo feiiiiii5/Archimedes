@@ -20,10 +20,12 @@ type ReaderProps = {
   onSessionSave: (session: PaperReaderSession) => void;
   onActivityChange: (busy: boolean) => void;
   noteDrafts: LibraryNoteDrafts;
+  executionWorkspace: string;
 };
 type Props = {
   bridge: ResearchDeskBridge;
-  workspace: string;
+  dataRoot: string;
+  executionWorkspace: string;
   projectId?: string | null;
   active: boolean;
   refreshVersion: number;
@@ -35,7 +37,7 @@ type Props = {
   renderImport: (props: { library: ResearchLibrary; open: boolean; onClose: () => void; onImport: (paper: AcademicSearchResult) => Promise<void>; onLocalImported: () => Promise<void> }) => ReactNode;
 };
 
-export default function LibraryWorkspace({ bridge, workspace, projectId, active, refreshVersion, onLibraryImported, onOpenProject, renderReader, renderInspector, renderEditor, renderImport }: Props) {
+export default function LibraryWorkspace({ bridge, dataRoot, executionWorkspace, projectId, active, refreshVersion, onLibraryImported, onOpenProject, renderReader, renderInspector, renderEditor, renderImport }: Props) {
   const { t } = useUISettings();
   const confirm = useConfirm();
   const [libraries, setLibraries] = useState<ResearchLibrary[]>([]);
@@ -207,7 +209,7 @@ export default function LibraryWorkspace({ bridge, workspace, projectId, active,
     if (activeDocument === key) setActiveDocument(remaining.length ? libraryDocumentKey(remaining.at(-1)!) : null);
   }
   const updatePaper = useCallback(async (paperId: string, patch: PaperPatch) => {
-    const updated = await bridge.updateLibraryPaper(paperId, patch, workspace);
+    const updated = await bridge.updateLibraryPaper(paperId, patch, dataRoot);
     if (!mounted.current) return;
     const next = { ...catalogRef.current };
     for (const [id, papers] of Object.entries(next)) {
@@ -217,7 +219,7 @@ export default function LibraryWorkspace({ bridge, workspace, projectId, active,
     }
     catalogRef.current = next;
     setCatalog(next);
-  }, [bridge, workspace]);
+  }, [bridge, dataRoot]);
   async function removePaper(paper: LibraryPaper) {
     const libraryId = paperLibraryId(paper);
     if (!libraryId || !(await confirm({ title: t("Remove paper?"), description: t("This paper will be removed from the selected library."), confirmLabel: t("Remove"), destructive: true }))) return;
@@ -323,7 +325,7 @@ export default function LibraryWorkspace({ bridge, workspace, projectId, active,
       </div>
       {(error || notice) && <div className="library-workspace-notices"><InlineNotice tone={error ? "danger" : "info"}>{error || notice}</InlineNotice><button className="icon-button" aria-label={t("Dismiss notice")} onClick={() => { setError(""); setNotice(""); }}><X size={14} /></button></div>}
       {currentDocument && documentPaper && documentLibrary ? <div className="library-document-content" key={libraryDocumentKey(currentDocument)}>
-        {currentDocument.kind === "notes" ? <LibraryPaperNotes key={documentPaper.id} paper={documentPaper} drafts={drafts.current} onSave={(notes) => updatePaper(documentPaper.id, { notes })} /> : renderReader({ paper: documentPaper, library: documentLibrary, onBack: () => browse(documentLibrary.id), onUpdate: (patch) => updatePaper(documentPaper.id, patch), session: sessions.current.get(documentPaper.id), onSessionSave: (session) => { sessions.current.set(documentPaper.id, session); }, onActivityChange: setReaderBusy, noteDrafts: drafts.current })}
+        {currentDocument.kind === "notes" ? <LibraryPaperNotes key={documentPaper.id} paper={documentPaper} drafts={drafts.current} onSave={(notes) => updatePaper(documentPaper.id, { notes })} /> : renderReader({ paper: documentPaper, library: documentLibrary, onBack: () => browse(documentLibrary.id), onUpdate: (patch) => updatePaper(documentPaper.id, patch), session: sessions.current.get(documentPaper.id), onSessionSave: (session) => { sessions.current.set(documentPaper.id, session); }, onActivityChange: setReaderBusy, noteDrafts: drafts.current, executionWorkspace })}
       </div> : <div className="library-browser">
         <header className="library-browser-header"><div><h1>{library?.name || t(scope === "all" ? "All papers" : "Library")}</h1><p>{library?.description || t("Your papers and reading notes, organised by research topic.")}</p></div>{!scope && <button className="secondary-button" onClick={() => setEditor("new")}><FolderPlus size={15} />{t("New folder")}</button>}{library && <button className="icon-button" ref={menuRef} onClick={() => setMenuLibrary(library)} aria-label={t("Folder actions for {name}", { name: library.name })}><MoreHorizontal size={17} /></button>}</header>
         {!scope && !query.trim() ? <div className="library-overview">

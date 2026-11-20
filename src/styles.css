@@ -1141,6 +1141,18 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 }
 
 .main-workspace { position: relative; display: grid; min-width: 0; min-height: 0; grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr); }
+.task-selection-error {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border-default);
+  color: var(--menu-danger);
+  background: var(--surface-panel);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .workbench-resizing .codex-main { transition: none; }
 .main-toolbar {
   display: flex;

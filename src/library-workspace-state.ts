@@ -13,6 +13,12 @@ export function libraryDocumentKey(document: LibraryDocument) {
   return `${document.kind}:${document.libraryId}:${document.paperId}`;
 }
 
+/** A started paper thread keeps the execution folder it first ran in; a new
+ * chat follows the project's current execution folder. */
+export function paperChatExecutionRoot(currentExecutionRoot: string, threadId?: string, threadWorkspacePath?: string | null) {
+  return threadId && threadWorkspacePath ? threadWorkspacePath : currentExecutionRoot;
+}
+
 export function matchLibraryPaper(paper: LibraryPaper, query: string) {
   const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
   const needle = normalize(query);

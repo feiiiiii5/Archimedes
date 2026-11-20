@@ -90,7 +90,7 @@ import { Dialog } from "./Dialog";
 import { InlineNotice } from "./InlineNotice";
 import LibraryWorkspace from "./LibraryWorkspace";
 import { LibraryPaperNotes, type LibraryNoteDrafts } from "./LibraryPaperNotes";
-import type { PaperReaderSession } from "./library-workspace-state";
+import { paperChatExecutionRoot, type PaperReaderSession } from "./library-workspace-state";
 
 const LIBRARY_COLORS = ["#3973c8", "#2d8a68", "#a8652e", "#7a5bb5", "#b34f58"];
 const PAPER_CHAT_DEFAULT_WIDTH = 354;
@@ -178,6 +178,8 @@ type LibraryViewProps = {
   mode: "library" | "daily";
   initialDailyMode?: DailyDiscoveryMode | "conference";
   workspace?: string;
+  executionWorkspace?: string;
+  workspaceId?: string | null;
   active?: boolean;
   projectId?: string | null;
   libraryRefreshVersion?: number;
@@ -188,12 +190,12 @@ type LibraryViewProps = {
 };
 
 export default function LibraryView(props: LibraryViewProps) {
-  const { bridge, mode, initialDailyMode, workspace = "", active = true, projectId, libraryRefreshVersion = 0, onLibraryImported, onInternalReviewThreadsDeleted, onReproduceOpened, onOpenProject } = props;
+  const { bridge, mode, initialDailyMode, workspace = "", executionWorkspace = "", workspaceId, active = true, projectId, libraryRefreshVersion = 0, onLibraryImported, onInternalReviewThreadsDeleted, onReproduceOpened, onOpenProject } = props;
   if (mode === "library") return <LibraryWorkspace
     key={`${workspace}:${projectId || "local"}`}
-    bridge={bridge} workspace={workspace} projectId={projectId} active={active} refreshVersion={libraryRefreshVersion}
+    bridge={bridge} dataRoot={workspace} executionWorkspace={executionWorkspace} projectId={projectId} active={active} refreshVersion={libraryRefreshVersion}
     onLibraryImported={onLibraryImported} onOpenProject={onOpenProject}
-    renderReader={(readerProps) => <PaperReadingWorkbench {...readerProps} bridge={bridge} workspace={workspace} projectId={projectId} onInternalReviewThreadsDeleted={onInternalReviewThreadsDeleted} onReproduceOpened={onReproduceOpened} />}
+    renderReader={(readerProps) => <PaperReadingWorkbench {...readerProps} bridge={bridge} workspace={workspace} workspaceId={workspaceId} projectId={projectId} onInternalReviewThreadsDeleted={onInternalReviewThreadsDeleted} onReproduceOpened={onReproduceOpened} />}
     renderInspector={(inspectorProps) => <PaperInspector {...inspectorProps} />}
     renderEditor={(editorProps) => <LibraryEditor {...editorProps} active={active} />}
     renderImport={(importProps) => <PaperImportModal {...importProps} bridge={bridge} workspace={workspace} />}
@@ -459,11 +461,11 @@ const PaperChatComposer = memo(function PaperChatComposer({ busy, cancelling, ca
   </div>;
 });
 
-function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, workspace, projectId, onInternalReviewThreadsDeleted, onReproduceOpened, session, onSessionSave, onActivityChange, noteDrafts }: {
+function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, workspace, executionWorkspace, workspaceId, projectId, onInternalReviewThreadsDeleted, onReproduceOpened, session, onSessionSave, onActivityChange, noteDrafts }: {
   paper: ReaderLibraryPaper; library: ResearchLibrary; onBack: () => void;
   session?: PaperReaderSession; onSessionSave: (session: PaperReaderSession) => void; onActivityChange: (busy: boolean) => void; noteDrafts: LibraryNoteDrafts;
   onUpdate: (patch: Parameters<ResearchDeskBridge["updateLibraryPaper"]>[1]) => Promise<void>;
-  bridge: ResearchDeskBridge; workspace: string; projectId?: string | null; onInternalReviewThreadsDeleted?: (threadIds: string[]) => void; onReproduceOpened?: (reproductionId: string) => void;
+  bridge: ResearchDeskBridge; workspace: string; executionWorkspace: string; workspaceId?: string | null; projectId?: string | null; onInternalReviewThreadsDeleted?: (threadIds: string[]) => void; onReproduceOpened?: (reproductionId: string) => void;
 }) {
   const { language, t } = useUISettings();
   const [reader, setReader] = useState<PaperReaderState | null>(null);
@@ -528,6 +530,7 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
   const [chatBusy, setChatBusy] = useState(false);
   const [chatCancelling, setChatCancelling] = useState(false);
   const [chatThreadId, setChatThreadId] = useState<string | undefined>();
+  const chatThreadWorkspaceRef = useRef<string | null>(null);
   const [chatMessages, setChatMessages] = useState<PaperChatMessage[]>([]);
   const [streamingChatText, setStreamingChatText] = useState<string | null>(null);
   // Token deltas arrive far faster than the markdown tree can re-render. Buffer
@@ -582,6 +585,7 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
     briefingStartedRef.current = false;
     setChatHistoryLoaded(false);
     setChatThreadId(undefined);
+    chatThreadWorkspaceRef.current = null;
     setChatMessages([]);
     setStreamingChatText(null);
     activePaperRunIdRef.current = null;
@@ -592,6 +596,7 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
           .filter((message) => !isHiddenPaperBriefingInstruction(message))
           .map((message) => ({ role: message.role, text: message.text }));
         setChatThreadId(thread.id);
+        chatThreadWorkspaceRef.current = thread.workspace_path || null;
         setChatMessages(messages);
         briefingStartedRef.current = messages.some((message) => message.role === "assistant");
       }
@@ -845,7 +850,9 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
     const userPrompt = question.trim();
     if (!userPrompt || chatBusy) return;
     setSideTab("chat");
-    if (!workspace) { setError("Choose a workspace before starting a paper conversation."); return; }
+    const executionRoot = paperChatExecutionRoot(executionWorkspace, chatThreadId, chatThreadWorkspaceRef.current);
+    if (!workspace) { setError(t("Choose a library folder before starting a paper conversation.")); return; }
+    if (!executionRoot) { setError(t("Choose an execution folder before starting a paper conversation.")); return; }
     const quotedPassage = options.initialBriefing || !selection ? "" : `\n\nSelected passage from page ${pageNumber}:\n> ${selection}`;
     const attachedCode = options.initialBriefing ? "" : codeAttachments.map((attachment) =>
       "\n\nSelected code from " + attachment.path + ":" + attachment.startLine + "-" + attachment.endLine +
@@ -883,7 +890,8 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
     try {
       const result = await bridge.runAgent({
         prompt: instruction,
-        workspace,
+        workspace: executionRoot,
+        workspaceId: chatThreadId ? undefined : workspaceId || undefined,
         threadId: chatThreadId,
         projectId: projectId || undefined,
         mode: options.initialBriefing || aiMode === "audit" ? "deep-research" : "free-chat",
@@ -899,6 +907,7 @@ function PaperReadingWorkbench({ paper, library, onBack, onUpdate, bridge, works
         clientRunId,
       });
       setChatThreadId(result.threadId);
+      chatThreadWorkspaceRef.current = result.thread.workspace_path || executionRoot;
       setChatMessages((current) => [...current, { role: "assistant", text: result.response }]);
       if (result.paperChatSaveError) setError(result.paperChatSaveError);
     } catch (askError) {
