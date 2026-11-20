@@ -213,7 +213,7 @@ const previewModelCapabilities: ModelCapabilities = {
 };
 
 function chatModeFromThread(mode: ResearchMode, events: ResearchEvent[] = []): NewChatMode {
-  if (mode === "standard" || mode === "research" || mode === "create" || mode === "experiment-setup") return mode;
+  if (mode === "standard" || mode === "research" || mode === "create") return mode;
   if (mode === "idea-spark") return "research";
   return events.some((event) => event.type === "research_skill" && (event.payload as { skill?: string } | null)?.skill === "idea-spark") ? "research" : "standard";
 }
@@ -1927,7 +1927,7 @@ function App() {
     setMessages(thread.messages.length ? thread.messages : initialMessages);
     setTrajectoryEvents(thread.events ?? []);
     setEvents([]);
-    setResearchMode(chatModeFromThread(thread.mode, thread.events));
+    setResearchMode(thread.mode === "experiment-setup" ? thread.mode : chatModeFromThread(thread.mode, thread.events));
     setChangeSets(thread.changeSets ?? []);
     const tasks = thread.turns.map((turn) => turn.task_id).filter(Boolean);
     const runningAction = activeRunRef.current?.threadId === thread.id ? activeRunRef.current.pendingAction : null;
@@ -2423,7 +2423,7 @@ function App() {
       setTrajectoryEvents(thread?.events ?? []);
       setEvents([]);
       setBoundHarness(thread?.harness ?? null);
-      setResearchMode(thread ? chatModeFromThread(thread.mode, thread.events) : "standard");
+      setResearchMode(thread?.mode === "experiment-setup" ? thread.mode : thread ? chatModeFromThread(thread.mode, thread.events) : "standard");
       setChangeSets(thread?.changeSets ?? []);
       setPendingAction(null);
       setFileTree(nextTree);
