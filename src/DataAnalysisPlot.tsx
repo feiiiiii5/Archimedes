@@ -23,7 +23,10 @@ export const DataAnalysisPlot = memo(forwardRef<SVGSVGElement, { dataset: Datase
   useEffect(() => {
     if (!wrapper.current || typeof ResizeObserver === "undefined") return;
     const node = wrapper.current;
-    const observer = new ResizeObserver(() => setWidth(Math.max(280, node.clientWidth)));
+    const observer = new ResizeObserver(() => {
+      const width = node.clientWidth;
+      if (width > 0) setWidth(Math.max(280, width));
+    });
     observer.observe(node);
     return () => observer.disconnect();
   }, [plot.points.length > 0]);

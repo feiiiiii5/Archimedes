@@ -71,6 +71,7 @@ const { searchConferencePapers } = require("./conferences.cjs");
 const skillCatalog = require("./skill-catalog.cjs");
 const speech = require("./speech.cjs");
 const store = require("./store.cjs");
+const { registerProjectResultCommands } = require("./project-result-commands.cjs");
 const { createWorkspaceIpc, resolveResearchContext, isWorkspaceDataChannel } = require("./workspace-context.cjs");
 const researchGraph = require("./research-graph/service.cjs");
 const experimentRunner = require("./research-graph/experiment-runner.cjs");
@@ -1228,6 +1229,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("web-search:get-config", () => webSearch.getPublicWebSearchConfig());
 
   ipcMain.handle("web-search:save-config", (_event, input = {}) => webSearch.saveWebSearchConfig(input));
+
+  registerProjectResultCommands({ ipcMain, store });
 
   ipcMain.handle("library:list", (_event, input = {}) => store.listLibraries(input.projectId ?? null));
 

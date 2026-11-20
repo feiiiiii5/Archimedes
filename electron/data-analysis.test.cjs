@@ -7,12 +7,13 @@ const { JSDOM } = require("jsdom");
 let scope, load;
 before(async () => {
   const { transformWithOxc } = await import("vite");
-  scope = {};
+  scope = { parseDelimited: (await import("../shared/delimited.mjs")).parseDelimited };
   load = async (file, names) => {
     const source = fs.readFileSync(path.join(__dirname, "../src", file), "utf8")
-      .replace(/^import .*;\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
+      .replace(/^import .*;\r?\n/gm, "").replace(/^export \{ parseDelimited \} from "\.\.\/shared\/delimited\.mjs";\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
     const { code } = await transformWithOxc(source, file, { jsx: { runtime: "classic" } });
-    Object.assign(scope, new Function(...Object.keys(scope), `${code}\nreturn {${names.join(",")}};`)(...Object.values(scope)));
+    const bindings = Object.keys(scope).filter(key => !names.includes(key) || key === "parseDelimited");
+    Object.assign(scope, new Function(...bindings, `${code}\nreturn {${names.join(",")}};`)(...bindings.map(key => scope[key])));
   };
   await load("data-analysis.ts", ["parseDelimited", "numericValue", "isMissing", "dateValue", "summarizeColumn", "profileDataset", "buildPlot"]);
   scope.penguins = fs.readFileSync(path.join(__dirname, "../src/assets/data-analysis/penguins.csv"), "utf8");
@@ -113,5 +114,195 @@ test("field inspection does not empty a valid plot; examples, pagination and bou
   } finally {
     await React.act(async () => root.unmount()); dom.window.close();
     for (const [key, value] of Object.entries(saved)) value === undefined ? delete global[key] : global[key] = value;
+  }
+});
+
+test("analysis owner changes retain each dataset and question, and delayed handoffs identify stale input", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const keys = ["window", "document", "HTMLElement", "Node", "IS_REACT_ACT_ENVIRONMENT"];
+  const saved = Object.fromEntries(keys.map(key => [key, global[key]]));
+  Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
+  const React = require("react"), { createRoot } = require("react-dom/client");
+  const icons = require("lucide-react");
+  Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map(name => [name, icons[name]])), useUISettings: () => ({ t: key => key }) });
+  await load("Tabs.tsx", ["Tabs", "Tab"]);
+  await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
+  scope.format = scope.formatAnalysisNumber;
+  await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
+  const root = createRoot(document.getElementById("root"));
+  let release, handoff;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ask = (text, input, isCurrentInput) => { handoff = { text, input, isCurrentInput }; return waiting; };
+  const render = ownerKey => React.act(async () => root.render(React.createElement(scope.DataAnalysisView, { ownerKey, onAskAI: ask })));
+  const input = async text => React.act(async () => {
+    const node = document.getElementById("analysis-question");
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, text);
+    node.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  const example = id => React.act(async () => {
+    const node = document.querySelector('[aria-label="Example dataset"]');
+    node.value = id; node.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  try {
+    await render('project-a'); await example('weather'); await input('Keep A question');
+    await render('project-b');
+    assert.equal(document.querySelector('[aria-label="Example dataset"]').value, 'penguins');
+    assert.equal(document.getElementById('analysis-question').value, '');
+    await input('Keep B question');
+    await render('project-a');
+    assert.equal(document.querySelector('[aria-label="Example dataset"]').value, 'weather');
+    assert.equal(document.getElementById('analysis-question').value, 'Keep A question');
+    await React.act(async () => { document.querySelector('[aria-label="Continue in chat"]').click(); });
+    assert.equal(handoff.input.id, 'example:weather');
+    assert.equal(handoff.isCurrentInput(), true);
+    assert.match(handoff.text, /full dataset is not attached/);
+    assert.equal(document.querySelector('[aria-label="Continue in chat"]').disabled, true);
+    await example('penguins');
+    assert.equal(handoff.isCurrentInput(), false);
+    await React.act(async () => { release(); await waiting; });
+    await render('project-b');
+    assert.equal(document.getElementById('analysis-question').value, 'Keep B question');
+  } finally {
+    release();
+    await React.act(async () => root.unmount()); dom.window.close();
+    for (const [key, value] of Object.entries(saved)) value === undefined ? delete global[key] : global[key] = value;
+  }
+});
+
+test("the actual analysis component saves full CSV plus SVG, reopens its configuration, and links an explicit source handoff", async () => {
+  const os = require("node:os"), crypto = require("node:crypto"), packages = require("./project-results.cjs");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archimedes-analysis-result-")));
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const keys = ["window", "document", "HTMLElement", "Node", "XMLSerializer", "getComputedStyle", "ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"];
+  const savedGlobals = Object.fromEntries(keys.map((key) => [key, global[key]]));
+  Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, XMLSerializer: dom.window.XMLSerializer, getComputedStyle: dom.window.getComputedStyle, IS_REACT_ACT_ENVIRONMENT: true });
+  let measurePlot;
+  global.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(target) { measurePlot = (width) => { Object.defineProperty(target, "clientWidth", { configurable: true, value: width }); this.callback(); }; }
+    disconnect() {}
+  };
+  const React = require("react"), { createRoot } = require("react-dom/client"), icons = require("lucide-react");
+  Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map((name) => [name, icons[name]])), useUISettings: () => ({ t: (key) => key }) });
+  await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
+  scope.format = scope.formatAnalysisNumber; await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
+  const records = new Map(), owner = { dataRoot: directory, projectId: "project-a", workspaceId: "workspace-a", executionRoot: directory };
+  let releaseFirstSave;
+  const firstSave = new Promise(resolve => { releaseFirstSave = resolve; });
+  const bridge = {
+    saveProjectResult: async (input) => {
+      await firstSave;
+      const detail = packages.savePackage({ ...input, executionRoot: directory, id: input.id || crypto.randomUUID() });
+      records.set(detail.id, detail);
+      return detail;
+    },
+    linkProjectResultThread: async (id, threadId, dataRoot) => { assert.equal(dataRoot, owner.dataRoot); const record = { ...records.get(id), threadId }; records.set(id, record); return packages.readPackage(record); },
+    listProjectResults: async () => [...records.values()], getProjectResult: async (id) => packages.readPackage(records.get(id)), readProjectResultFile: async (id, name) => packages.readPackageFile(records.get(id), name),
+  };
+  let root = createRoot(document.getElementById("root")), handoff, handoffGate;
+  const render = async () => React.act(async () => { root.render(React.createElement(scope.DataAnalysisView, { ownerKey: directory, owner, bridge, onAskAI: (text, input) => { handoff = { text, input }; return handoffGate || "real-linked-session"; } })); });
+  const click = async (label) => React.act(async () => { const button = [...document.querySelectorAll("button")].find((item) => item.textContent === label); assert.ok(button, label); assert.equal(button.disabled, false); button.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  const question = async (text) => React.act(async () => { const node = document.getElementById("analysis-question"); Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, text); node.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
+  try {
+    await render(); await question("Initial question");
+    await React.act(async () => { measurePlot(720); });
+    await click("Save analysis to project");
+    await question("Compare the complete observations");
+    await React.act(async () => { releaseFirstSave(); await firstSave; });
+    const firstRecord = [...records.values()][0];
+    assert.equal(firstRecord.manifest.question, "Initial question");
+    assert.equal(document.getElementById("analysis-question").value, "Compare the complete observations");
+    assert.doesNotMatch(document.body.textContent, /Analysis snapshot saved to this project/, "the newer question is still unsaved");
+    await click("Save analysis to project");
+    assert.equal(records.size, 1, "the next save updates the existing package");
+    assert.equal(records.get(firstRecord.id).manifest.question, "Compare the complete observations");
+    const svgFromPlot = packages.readPackageFile(records.get(firstRecord.id), "plot.svg").content;
+    const visibleSvg = document.querySelector("#analysis-plot-panel svg");
+    await click("Data table");
+    await React.act(async () => { measurePlot(0); });
+    assert.equal(document.querySelector("#analysis-plot-panel svg"), visibleSvg, "the hidden chart retains the visible layout");
+    assert.equal(document.getElementById("analysis-plot-panel").hidden, true);
+    await click("Save analysis to project");
+    assert.equal(packages.readPackageFile(records.get(firstRecord.id), "plot.svg").content, svgFromPlot,
+      "saving in the data tab preserves the chart geometry and text sizing");
+    const record = [...records.values()][0], source = record.files.find((file) => file.role === "source");
+    assert.equal(fs.readFileSync(path.join(directory, source.path), "utf8"), scope.penguins, "save must keep the original complete bytes rather than the five-row prompt sample");
+    assert.match(packages.readPackageFile(record, "plot.svg").content, /<svg/);
+    const lines = scope.penguins.trimEnd().split("\n"), lastLine = lines.length;
+    assert.ok(lastLine > 5);
+    assert.match(require("./agent/workspace-tools.cjs").readLines(directory, source.path, lastLine, lastLine).content, new RegExp(lines.at(-1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    await React.act(async () => root.unmount()); root = createRoot(document.getElementById("root")); await render();
+    assert.equal(document.getElementById("analysis-question").value, "");
+    await React.act(async () => { const node = document.querySelector('[aria-label="Saved analyses"]'); node.value = record.id; node.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await click("Open saved analysis"); assert.equal(document.getElementById("analysis-question").value, "Compare the complete observations");
+    await click("Continue with original CSV / TSV");
+    assert.equal(records.size, 1, "linking the newly created session updates the same result package");
+    assert.equal([...records.values()][0].threadId, "real-linked-session");
+    assert.equal(handoff.input.resultId, record.id); assert.equal(handoff.input.sourcePath, source.path);
+    assert.match(handoff.text, /complete original file saved at research-results\/analysis/);
+    assert.match(handoff.text, /does not place every row in the model context/);
+    assert.ok(!handoff.text.includes(lines.at(-1)), "attaching a path must not silently put the full source into the message");
+    let releaseDiscussion;
+    handoffGate = new Promise(resolve => { releaseDiscussion = resolve; });
+    await question("Keep snapshot A together");
+    await click("Continue with original CSV / TSV");
+    const beforeLink = packages.readPackage(records.get(record.id));
+    const svgA = packages.readPackageFile(beforeLink, "plot.svg").content;
+    const sourceA = packages.readPackageFile(beforeLink, source.name).content;
+    await React.act(async () => { const node = document.querySelector('[aria-label="Example dataset"]'); node.value = "weather"; node.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await question("Keep B draft");
+    const chartB = document.querySelector(".analysis-plot-panel svg").outerHTML;
+    await React.act(async () => { releaseDiscussion("real-linked-session"); await handoffGate; });
+    const afterLink = packages.readPackage(records.get(record.id));
+    assert.equal(crypto.createHash("sha256").update(packages.readPackageFile(afterLink, "plot.svg").content).digest("hex"), crypto.createHash("sha256").update(svgA).digest("hex"), "discussion association must keep A's SVG instead of reading B's current DOM");
+    assert.equal(packages.readPackageFile(afterLink, source.name).content, sourceA);
+    assert.deepEqual(afterLink.manifest, beforeLink.manifest);
+    assert.equal(afterLink.threadId, "real-linked-session");
+    assert.equal(document.querySelector('[aria-label="Example dataset"]').value, "weather");
+    assert.equal(document.getElementById("analysis-question").value, "Keep B draft");
+    assert.equal(document.querySelector(".analysis-plot-panel svg").outerHTML, chartB);
+
+  } finally { await React.act(async () => root.unmount()); dom.window.close(); fs.rmSync(directory, { recursive: true, force: true }); for (const [key, value] of Object.entries(savedGlobals)) value === undefined ? delete global[key] : global[key] = value; }
+});
+
+test("a save that finishes after switching data folders does not list the old project in the new store", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const keys = ["window", "document", "HTMLElement", "Node", "XMLSerializer", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"];
+  const savedGlobals = Object.fromEntries(keys.map((key) => [key, global[key]]));
+  Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, XMLSerializer: dom.window.XMLSerializer, getComputedStyle: dom.window.getComputedStyle, IS_REACT_ACT_ENVIRONMENT: true });
+  const React = require("react"), { createRoot } = require("react-dom/client"), icons = require("lucide-react");
+  Object.assign(scope, { React, ...React, ...Object.fromEntries(["ArrowRight", "Download", "Upload", "X"].map((name) => [name, icons[name]])), useUISettings: () => ({ t: (key) => key }) });
+  await load("Tabs.tsx", ["Tabs", "Tab"]); await load("DataAnalysisPlot.tsx", ["DataAnalysisPlot", "formatAnalysisNumber"]);
+  scope.format = scope.formatAnalysisNumber; await load("DataAnalysisView.tsx", ["DataAnalysisView"]);
+  let releaseSave;
+  const saveGate = new Promise((resolve) => { releaseSave = resolve; });
+  const listCalls = [];
+  const owners = {
+    a: { dataRoot: "/data-a", projectId: "project-a", workspaceId: "workspace-a", executionRoot: "/data-a" },
+    b: { dataRoot: "/data-b", projectId: "project-b", workspaceId: "workspace-b", executionRoot: "/data-b" },
+  };
+  const bridge = {
+    saveProjectResult: async (input) => {
+      await saveGate;
+      return { id: "saved-a", projectId: input.projectId, workspaceId: input.workspaceId, kind: "analysis", fileState: "ready" };
+    },
+    listProjectResults: async ({ projectId }) => { listCalls.push(projectId); return []; },
+  };
+  const root = createRoot(document.getElementById("root"));
+  const render = async (key) => React.act(async () => root.render(React.createElement(scope.DataAnalysisView, { ownerKey: key, owner: owners[key], bridge })));
+  try {
+    await render("a");
+    const save = [...document.querySelectorAll("button")].find((item) => item.textContent === "Save analysis to project");
+    assert.ok(save);
+    await React.act(async () => { save.click(); await Promise.resolve(); });
+    await render("b");
+    const beforeRelease = listCalls.length;
+    await React.act(async () => { releaseSave(); await saveGate; await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.deepEqual(listCalls.slice(beforeRelease), [], "the delayed A save must not list project-a through the B data folder");
+    assert.ok(listCalls.includes("project-b"));
+  } finally {
+    releaseSave();
+    await React.act(async () => root.unmount()); dom.window.close();
+    for (const [key, value] of Object.entries(savedGlobals)) value === undefined ? delete global[key] : global[key] = value;
   }
 });
